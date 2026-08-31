@@ -15,7 +15,7 @@ import type { AgentsServiceLike } from './agents.ts'
 export const name = 'dsh-market'
 
 /** Optional cordis.yml configuration; profile defaults to `web`. */
-export type Config = Partial<Pick<MarketConfig, 'profile' | 'allowRestart' | 'maxSnapshots'>>
+export type Config = Partial<Pick<MarketConfig, 'profile' | 'allowRestart' | 'maxSnapshots' | 'buildEnv'>>
 
 /**
  * Structural subset of the dsh launcher's public `profileContext` service —
@@ -197,6 +197,9 @@ export function apply(ctx: Context, config?: Config): void {
         // is exactly the distinction supervisor detection needs (#229).
         allowRestart: config?.allowRestart,
         maxSnapshots: config?.maxSnapshots,
+        // Build-time environment (#336); undefined means "inherit", and the
+        // settings wiring below is what makes it editable at runtime.
+        buildEnv: config?.buildEnv,
       }
       // Web settings may control restart; Desktop only registers the card's
       // namespace below. Both no-op on a host without a settings service.
@@ -225,6 +228,9 @@ export function apply(ctx: Context, config?: Config): void {
         // lifecycle. The shell remains responsible for restart in this mode.
         allowRestart: false,
         maxSnapshots: config?.maxSnapshots,
+        // The operator's pinned build environment applies in Desktop mode
+        // too: Desktop's packaged pnpm still runs plugin build scripts.
+        buildEnv: config?.buildEnv,
       }
       const desktopHost = desktopCtx as unknown as MarketEffectHost
       installDesktopMarketSettings(desktopCtx)

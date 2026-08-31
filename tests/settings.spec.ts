@@ -74,6 +74,15 @@ describe('MarketSettings schema', () => {
   it('accepts an explicit off', () => {
     expect(MarketSettings({ allowRestart: false }).allowRestart).toBe(false)
   })
+  it('defaults buildEnv to nothing', () => {
+    expect(MarketSettings({}).buildEnv).toEqual({})
+  })
+
+  it('accepts a pinned build environment (#336)', () => {
+    expect(MarketSettings({ buildEnv: { CC: '/usr/bin/gcc-11', CXX: '/usr/bin/g++-11' } }).buildEnv)
+      .toEqual({ CC: '/usr/bin/gcc-11', CXX: '/usr/bin/g++-11' })
+  })
+
 
   it('claims only what this namespace actually stores', () => {
     // The release channel was in here for one version, and it made this a
@@ -88,7 +97,7 @@ describe('MarketSettings schema', () => {
     // The consequence itself is caught in layer 3 (tests/web/channel.e2e.ts)
     // against a real settings service, per this file's own rule about not
     // hand-writing a stand-in for a contract we did not author.
-    expect(Object.keys(MarketSettings({}))).toEqual(['allowRestart'])
+    expect(Object.keys(MarketSettings({}))).toEqual(['allowRestart', 'buildEnv'])
   })
 })
 
@@ -101,6 +110,37 @@ describe('installMarketSettings', () => {
     expect(ctx.injected.flat()).toContain('settings')
     expect(ctx.injected.flat()).not.toContain('webServer')
   })
+  it('syncs a pinned buildEnv into the live config the routes read (#336)', () => {
+    // The routes read `resolved.buildEnv` live through the spawnEnv source,
+    // so a settings edit must land on that object — not on a copy made at
+    // registration. Same contract `allowRestart` already holds.
+    let stored: MarketSettings = { allowRestart: true, buildEnv: { CC: '/usr/bin/gcc-11', CXX: '/usr/bin/g++-11' } }
+    let notify: () => void = () => {}
+    const scope = {
+      get: () => stored,
+      watch: (listener: () => void) => { notify = listener },
+    }
+    const ctx = {
+      injected: [] as string[][],
+      inject(services: string[], callback: (scoped: unknown) => void) {
+        ctx.injected.push(services)
+        if (services.includes('settings')) {
+          callback({ settings: { register: () => scope }, effect: (run: () => unknown) => run() })
+        }
+      },
+      effect: (run: () => unknown) => { run() },
+      on: () => () => {},
+    }
+    const resolved: { allowRestart?: boolean; buildEnv?: Record<string, string> } = { allowRestart: true }
+    installMarketSettings(ctx as never, resolved)
+    expect(resolved.buildEnv).toEqual({ CC: '/usr/bin/gcc-11', CXX: '/usr/bin/g++-11' })
+    // A later edit reaches the same object — the settings service calls the
+    // registered watcher on every commit, which is what re-syncs the config.
+    stored = { allowRestart: true, buildEnv: { CC: '/usr/bin/gcc-11' } }
+    notify()
+    expect(resolved.buildEnv).toEqual({ CC: '/usr/bin/gcc-11' })
+  })
+
 
   it('does not throw on a dsh 0.1.7 settings service, which has no register (#677)', () => {
     // 0.1.7's SettingsService exposes describe/update only; namespaces are
