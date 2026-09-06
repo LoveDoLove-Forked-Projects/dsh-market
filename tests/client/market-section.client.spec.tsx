@@ -106,7 +106,32 @@ function rankedNames(container: HTMLElement): Array<string | undefined> {
   return out
 }
 
-beforeEach(() => { stubFetch(); resetGithubRouting(); resetScreenshotsCache(); resetThemePreviewCache() })
+/**
+ * A working `localStorage`, installed per test.
+ *
+ * The ambient one is not usable here: Node ships its own `localStorage` when
+ * the runner is started with `--localstorage-file` (vitest does, and without a
+ * path), and that object shadows jsdom's — it has `getItem`/`setItem` but no
+ * `clear`, so every test in this file failed in `afterEach` the moment one
+ * touched it. The queue is persistent behaviour, so its tests need storage
+ * that behaves like a browser's, not whatever global happens to be winning.
+ */
+function fakeStorage(): Storage {
+  const map = new Map<string, string>()
+  return {
+    get length() { return map.size },
+    clear: () => map.clear(),
+    getItem: (key: string) => map.get(key) ?? null,
+    key: (index: number) => [...map.keys()][index] ?? null,
+    removeItem: (key: string) => { map.delete(key) },
+    setItem: (key: string, value: string) => { map.set(key, String(value)) },
+  }
+}
+
+beforeEach(() => {
+  vi.stubGlobal('localStorage', fakeStorage())
+  stubFetch(); resetGithubRouting(); resetScreenshotsCache(); resetThemePreviewCache()
+})
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
@@ -1218,7 +1243,21 @@ describe('MarketSection (jsdom)', () => {
     expect(banner.textContent).toContain('dsh-loop')
   })
 
-  it('a busy-agent update response names the running agent instead of the generic busy message', async () => {
+  it('a busy-agent update response queues instead of naming the running agent', async () => {
+    // Queue-era: a 409 agentsBusy update becomes a `queued` record the drain
+    // runs when agents go idle — the old "names the agent in a failure" copy
+    // is replaced by the queue copy.
+    stubFetch({
+      '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [] },
+      '/dsh-market/updates': { updates: { 'dsh-loop': { kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '1.2.0', updateAvailable: true } } },
+      '/dsh-market/update': {
+        ok: false,
+        agentsBusy: true,
+        runningAgents: ['main'],
+        error: 'agents are running',
+        __status: 409,
+      },
+    })
     stubFetch({
       '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [] },
       '/dsh-market/updates': { updates: { 'dsh-loop': { kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '1.2.0', updateAvailable: true } } },
@@ -1235,8 +1274,148 @@ describe('MarketSection (jsdom)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
     const updateButton = await screen.findByRole('button', { name: en.update })
     fireEvent.click(updateButton)
-    expect(await screen.findByText(`${en.agentBusyUpdate} (main)`)).toBeTruthy()
+    // Queued, not failed: the record line carries the queue copy (with the
+    // position suffix), so assert on the panel text rather than one element.
+    await waitFor(() => {
+      const panel = document.querySelector('[class*="opPanel"]')
+      expect(panel, 'the Tasks panel did not open').toBeTruthy()
+      expect(panel!.textContent).toContain(en.opQueued)
+    })
     expect(screen.queryByText(en.busyWait)).toBeNull()
+  })
+
+  it('queues an install when agents are busy instead of failing it', async () => {
+    // Agents-busy is a queue, not a failure: the 409 becomes a `queued`
+    // record the drain runs once agents go idle, and the card shows the
+    // queued badge rather than the clash/failure marker.
+    stubFetch({
+      '/dsh-market/install': {
+        ok: false,
+        agentsBusy: true,
+        runningAgents: ['main'],
+        error: 'agents are running',
+        __status: 409,
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    const installButtons = screen.getAllByRole('button', { name: en.install })
+    fireEvent.click(installButtons[0]!)
+    fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+    // The queued record lands in the Tasks panel with its queued line…
+    // (the entry reads "Installing 0/1" while one record is queued, and both
+    // the row status and the card badge say "Queued").
+    // The 409 handler opens the panel itself; just wait for the queued rows.
+    await waitFor(() => {
+      const panel = document.querySelector('[class*="opPanel"]')
+      expect(panel, 'the Tasks panel did not open').toBeTruthy()
+      expect(panel!.textContent).toContain(en.opQueued)
+    })
+    // …and the card answers "queued" instead of "cannot install".
+    // (getAllBy: both the panel row status and the card badge render it.)
+    expect((await screen.findAllByText(en.queuedBadge)).length).toBeGreaterThan(0)
+    expect(screen.queryByText(en.opBlockedCard)).toBeNull()
+  })
+
+  it('drains a queued install once agents go idle', async () => {
+    // NOTE: no fake timers here — the drain fires on a real 2s interval and
+    // the install POST resolves on the microtask queue. Fake timers freeze
+    // the real-interval drain while waitFor's own timers fight it.
+    const fetchMock = vi.fn((input: unknown, init?: RequestInit) => {
+      const path = String(input).split('?')[0]
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (path === '/dsh-market/registry') {
+        return Promise.resolve(new Response(JSON.stringify({ source: 'live', registry: REGISTRY }), { status: 200 }))
+      }
+      if (path === '/dsh-market/installed') {
+        return Promise.resolve(new Response(JSON.stringify({ profile: 'web', installed: {}, live: [] }), { status: 200 }))
+      }
+      if (path === '/dsh-market/updates') {
+        return Promise.resolve(new Response(JSON.stringify({ updates: {} }), { status: 200 }))
+      }
+      if (path === '/dsh-market/status') {
+        return Promise.resolve(new Response(JSON.stringify({
+          active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed: {},
+          runningAgents: [],
+        }), { status: 200 }))
+      }
+      if (path === '/dsh-market/install' && method === 'POST') {
+        const count = fetchMock.mock.calls.filter(([url, init]) =>
+          String(url).endsWith('/dsh-market/install') && (init?.method ?? 'GET').toUpperCase() === 'POST',
+        ).length
+        // First attempt: the agent is still busy, so the host refuses and the
+        // record queues. The drain then refetches /status (idle) and retries.
+        if (count === 1) {
+          return Promise.resolve(new Response(JSON.stringify({
+            ok: false, agentsBusy: true, runningAgents: ['main'], error: 'agents are running',
+          }), { status: 409 }))
+        }
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, hot: false }), { status: 200 }))
+      }
+      return Promise.reject(new Error(`unstubbed fetch: ${String(input)}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      localStorage.clear()
+      render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-loop')
+      // Queue one install while the agent is busy.
+      const installButtons = screen.getAllByRole('button', { name: en.install })
+      fireEvent.click(installButtons[0]!)
+      fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+      // First attempt hits the busy agent and queues…
+      await waitFor(() => {
+        const panel = document.querySelector('[class*="opPanel"]')
+        expect(panel!.textContent).toContain(en.opQueued)
+      })
+      // …agents go idle, the drain fires and the install succeeds.
+      // (A non-hot success needs a refresh, so the record reads
+      // "Installed · refresh the page to apply", not "Done".)
+      await waitFor(() => {
+        expect(fetchMock.mock.calls.filter(([url, init]) =>
+          String(url).endsWith('/dsh-market/install') && (init?.method ?? 'GET').toUpperCase() === 'POST',
+        )).toHaveLength(2)
+      }, { timeout: 8000 })
+      await waitFor(() => {
+        const panel = document.querySelector('[class*="opPanel"]')
+        expect(panel!.textContent).toContain(en.opDoneRefresh)
+      }, { timeout: 8000 })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps a queued install across remounts via localStorage', async () => {
+    stubFetch({
+      '/dsh-market/install': {
+        ok: false,
+        agentsBusy: true,
+        runningAgents: ['main'],
+        error: 'agents are running',
+        __status: 409,
+      },
+    })
+    localStorage.clear()
+    const first = render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    const installButtons = screen.getAllByRole('button', { name: en.install })
+    fireEvent.click(installButtons[0]!)
+    fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+    await waitFor(() => {
+      const panel = document.querySelector('[class*="opPanel"]')
+      expect(panel!.textContent).toContain(en.opQueued)
+    })
+    // A remount (settings dialog closed and reopened) restores the queue —
+    // restore opens the panel itself, so wait for the queued row.
+    first.unmount()
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    await waitFor(() => {
+      const panel = document.querySelector('[class*="opPanel"]')
+      expect(panel, 'the Tasks panel did not open').toBeTruthy()
+      expect(panel!.textContent).toContain(en.opQueued)
+    })
+    expect(JSON.parse(localStorage.getItem('dshm-queue-v1') ?? '[]')).toHaveLength(1)
   })
 
   it('shows a compatibility-risk banner after an update and rolls back on demand (#195)', async () => {
@@ -3368,6 +3547,68 @@ describe('search clear controls (#524)', () => {
     fireEvent.click(screen.getByRole('button', { name: zh.clearSearch }))
     expect(input).toHaveProperty('value', '')
     expect(await screen.findByText('dsh-notify')).toBeTruthy()
+  })
+})
+
+describe('a queued operation only runs while it still applies (#523)', () => {
+  /**
+   * The queue drains with no confirmation — that is what queueing is — so a
+   * row restored from an old session is a destructive operation launched from
+   * a stale decision: queue an uninstall at 10:00, remove the plugin by hand,
+   * open the market at 15:00 and it would run. Each kind has to be true NOW,
+   * and a row that is not is reported instead of executed.
+   */
+  const seedQueue = (rows: unknown[]): void => localStorage.setItem('dshm-queue-v1', JSON.stringify(rows))
+  const postsTo = (mock: { mock: { calls: unknown[][] } }, path: string): number =>
+    mock.mock.calls.filter(([url, init]) => String(url).endsWith(path)
+      && ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'POST').length
+  const panelText = (): string => document.querySelector('[class*="opPanel"]')?.textContent ?? ''
+
+  it('does not uninstall what is no longer installed, and says why', async () => {
+    const fetchMock = stubFetch() // nothing installed
+    seedQueue([{ kind: 'uninstall', name: 'dsh-loop' }])
+    render(<MarketSection {...props()} />)
+    // The restored row carries the name too, so the wait is for presence
+    // rather than for a unique match.
+    await screen.findAllByText('dsh-loop')
+    await waitFor(() => expect(panelText()).toContain(en.agentQueueStaleGone))
+    expect(postsTo(fetchMock, '/dsh-market/uninstall')).toBe(0)
+  })
+
+  it('does not update what has no update any more, and says why', async () => {
+    const fetchMock = stubFetch({
+      '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [] },
+      '/dsh-market/updates': { updates: {} },
+    })
+    seedQueue([{ kind: 'update', name: 'dsh-loop' }])
+    render(<MarketSection {...props()} />)
+    // Installed entries render twice (the card and the installed roster), so
+    // this waits for presence rather than uniqueness.
+    await screen.findAllByText('dsh-loop')
+    // The action must not run — that is the whole point — and what happened
+    // has to be visible: a skip notice, not a silent disappearance.
+    await waitFor(() => expect(panelText()).toMatch(/skipped/u))
+    // Wait out the drain's tick before claiming nothing ran: a row wrongly
+    // left in the queue fires on it, and asserting earlier would miss exactly
+    // the bug this test pins.
+    await new Promise(resolve => setTimeout(resolve, 2_600))
+    expect(postsTo(fetchMock, '/dsh-market/update')).toBe(0)
+    expect(localStorage.getItem('dshm-queue-v1')).toBeNull()
+  })
+
+  it('still runs a queued uninstall while the plugin is installed', async () => {
+    // The other half of the rule: the check must not reject a row that IS
+    // still true, or the queue would quietly stop working for the case it was
+    // built for.
+    stubFetch({
+      '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [] },
+      '/dsh-market/uninstall': { ok: true, agentsBusy: true, runningAgents: ['main'], error: 'agents are running', __status: 409 },
+    })
+    seedQueue([{ kind: 'uninstall', name: 'dsh-loop' }])
+    render(<MarketSection {...props()} />)
+    await screen.findAllByText('dsh-loop')
+    await waitFor(() => expect(panelText()).toContain(en.opQueued))
+    expect(panelText()).not.toContain(en.agentQueueStaleGone)
   })
 })
 

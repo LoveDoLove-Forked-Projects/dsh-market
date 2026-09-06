@@ -119,6 +119,38 @@ export type InstalledMap = Record<string, string>
  * must keep using the dependency-only map because a Bundle supplied by the
  * dsh installation is not owned by the profile package manager.
  */
+/** Why a queued operation may no longer be run. */
+export type QueuedRowStaleReason = 'gone' | 'no-update'
+
+/**
+ * Whether a queued operation still applies — `null` when it does.
+ *
+ * A queued row drains with NO confirmation; that is what queueing means. So a
+ * row restored from an old session is a destructive operation launched from a
+ * decision the user may have taken back since: queue an uninstall at 10:00,
+ * remove the plugin by hand, open the market at 15:00 and it would run. Every
+ * kind therefore has to be true RIGHT NOW, and this is the one place that
+ * decides — the restore in MarketSection reports what it returns instead of
+ * executing it.
+ *
+ * `install` asks the catalog (the entry may have been delisted), `uninstall`
+ * asks the installed map (it may be gone, or the user may have reinstalled
+ * it), and `update` asks both plus the update check (the pending release may
+ * have landed already).
+ */
+export function queuedRowApplies(
+  row: { kind: 'install' | 'update' | 'uninstall'; name: string; url?: string },
+  world: { installed: InstalledMap; updates: Record<string, UpdateStatus>; plugins: readonly RegistryPlugin[] },
+): QueuedRowStaleReason | null {
+  if (row.kind === 'install') {
+    if (row.url === undefined) return 'gone'
+    return world.plugins.some(plugin => plugin.url === row.url) ? null : 'gone'
+  }
+  if (world.installed[row.name] === undefined) return 'gone'
+  if (row.kind === 'update' && world.updates[row.name]?.updateAvailable !== true) return 'no-update'
+  return null
+}
+
 export function installedForCatalog(installed: InstalledMap, bundles: readonly string[]): InstalledMap {
   return Object.fromEntries([
     ...bundles.map(name => [name, '*'] as const),
@@ -204,6 +236,12 @@ export interface MarketStatus {
    * Restart must not be offered while it is held.
    */
   busy?: boolean
+  /**
+   * Ids of currently running agents, sampled from the same guard that refuses
+   * mutations while agents run. The client's install queue drains when this
+   * is empty and the operation lock is free; absent means idle.
+   */
+  runningAgents?: string[]
   /**
    * The process supervisor the host detected around itself (systemd, pm2),
    * or null/absent when none. Present so the UI can explain WHY the restart
