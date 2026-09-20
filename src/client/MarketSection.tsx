@@ -126,7 +126,16 @@ function HostDependencyDiagnostics({
 }
 
 /** The state label + dot for one activation result (P0-2). */
-function activationMeta(state: ActivationState, t: Translate): { label: string; dot: 'done' | 'warning' | 'error' } {
+function activationMeta(
+  state: ActivationState,
+  t: Translate,
+  dependencyOf?: string,
+): { label: string; dot: 'done' | 'warning' | 'error' } {
+  // A library another plugin pulled in is not a plugin that failed to start,
+  // so it gets its own label and no warning dot (#634).
+  if (state === 'inert' && dependencyOf !== undefined) {
+    return { label: t('stateDependencyLibrary').replace('{0}', dependencyOf), dot: 'done' }
+  }
   if (state === 'live') return { label: t('stateLive'), dot: 'done' }
   if (state === 'restart') return { label: t('stateRestart'), dot: 'warning' }
   if (state === 'inert') return { label: t('stateInert'), dot: 'warning' }
@@ -4006,7 +4015,7 @@ export function MarketSection(props: MarketSectionProps) {
             <span className={css.grow}>
               {activationWarnings.map(({ name, info }) => (
                 <div key={name}>
-                  <b>{name}</b> — {activationMeta(info.state, t).label}
+                  <b>{name}</b> — {activationMeta(info.state, t, info.dependencyOf).label}
                   {info.reasons.length > 0 && <span className={css.spec}>（{localizeBilingualList(info.reasons, lang)}）</span>}
                 </div>
               ))}
@@ -4689,7 +4698,7 @@ export function MarketSection(props: MarketSectionProps) {
                             const generation = status?.kind === 'generation' || isGenerationSpec(String(spec))
                             const localDev = !generation && (/^(?:link|file):/i.test(String(spec)) || status?.kind === 'linked')
                             const act = activations[name]
-                            const meta = act !== undefined ? activationMeta(act.state, t) : null
+                            const meta = act !== undefined ? activationMeta(act.state, t, act.dependencyOf) : null
                             const version = status && status.version ? 'v' + status.version : ''
                             const specText = String(spec)
                             // A plain range beside the resolved version says the
