@@ -17,12 +17,16 @@ const state = vi.hoisted(() => ({
     },
   },
   factoryArgs: [] as unknown[][],
+  packageManagers: [] as unknown[],
 }))
 
 vi.mock('../src/dsh-cli.ts', () => ({
   createDesktopPluginRuntime: (...args: unknown[]) => {
     state.factoryArgs.push(args)
     return state.runtime
+  },
+  setHostPackageManager: (invocation: unknown) => {
+    state.packageManagers.push(invocation)
   },
 }))
 
@@ -62,6 +66,7 @@ beforeEach(() => {
   state.routeDisposals = 0
   state.runtimeDisposals = 0
   state.factoryArgs = []
+  state.packageManagers = []
 })
 
 describe('profile the launcher booted (#639)', () => {
@@ -363,5 +368,80 @@ describe('host settings registration (#516)', () => {
     await vi.waitFor(() => { expect(service.describe().map(view => view.ns)).toEqual([ns]) })
     expect(state.mounts).toHaveLength(1)
     expect(state.mounts[0].config.allowRestart).toBe(!isDesktop)
+  })
+})
+
+describe('the launcher\'s own package manager (#653)', () => {
+  const published = {
+    name: 'desktop',
+    dir: '/home/u/.dsh/profiles/desktop',
+    packageManager: {
+      command: '/Applications/DSH.app/Contents/Resources/runtime/node',
+      args: ['/Applications/DSH.app/Contents/Resources/runtime/pnpm.mjs'],
+      env: { PATH: '/Applications/DSH.app/Contents/Resources/runtime', DSH_BUNDLED: '1' },
+    },
+  }
+
+  it('registers the published invocation, environment included', () => {
+    // The invocation is the whole tuple: the host names its bundled node AND
+    // the PATH its child processes need. Keeping only the command would leave
+    // a tool this process still cannot execute — the reported failure.
+    const ctx = new FakeContext({ webServer: {}, loader: {}, profileContext: published })
+
+    apply(ctx as never)
+
+    expect(state.packageManagers).toEqual([{
+      command: '/Applications/DSH.app/Contents/Resources/runtime/node',
+      args: ['/Applications/DSH.app/Contents/Resources/runtime/pnpm.mjs'],
+      env: { PATH: '/Applications/DSH.app/Contents/Resources/runtime', DSH_BUNDLED: '1' },
+    }])
+  })
+
+  it('registers nothing when the launcher publishes nothing', () => {
+    const ctx = new FakeContext({ webServer: {}, loader: {}, profileContext: { name: 'web', dir: '/d' } })
+
+    apply(ctx as never)
+
+    expect(state.packageManagers).toEqual([null])
+  })
+
+  it.each([
+    ['no command', { args: [], env: {} }],
+    ['blank command', { command: '   ', args: [], env: {} }],
+    ['non-string command', { command: 7, args: [], env: {} }],
+    ['missing args', { command: 'node' }],
+    ['non-array args', { command: 'node', args: 'pnpm' }],
+    ['non-string args', { command: 'node', args: ['pnpm', 1] }],
+    ['string env', { command: 'node', args: [], env: 'PATH=/' }],
+    ['null env', { command: 'node', args: [], env: null }],
+    ['array env', { command: 'node', args: [], env: [] }],
+    ['not an object', 'node'],
+    ['null', null],
+  ])('discards the whole invocation when it is malformed: %s', (_case, packageManager) => {
+    // Half an invocation is worse than none: it would aim the probe at a
+    // command it cannot run and keep the PATH fallback from ever being tried.
+    const ctx = new FakeContext({
+      webServer: {}, loader: {}, profileContext: { name: 'desktop', dir: '/d', packageManager },
+    })
+
+    apply(ctx as never)
+
+    expect(state.packageManagers).toEqual([null])
+  })
+
+  it('drops non-string environment values instead of handing them to spawn', () => {
+    const ctx = new FakeContext({
+      webServer: {},
+      loader: {},
+      profileContext: {
+        name: 'desktop',
+        dir: '/d',
+        packageManager: { command: 'node', args: [], env: { KEEP: 'yes', DROP_NUMBER: 7, DROP_OBJECT: {} } },
+      },
+    })
+
+    apply(ctx as never)
+
+    expect(state.packageManagers).toEqual([{ command: 'node', args: [], env: { KEEP: 'yes' } }])
   })
 })
