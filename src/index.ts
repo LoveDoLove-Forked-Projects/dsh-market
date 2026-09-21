@@ -4,7 +4,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { createDesktopPluginRuntime, type DesktopPnpmLike } from './dsh-cli.ts'
+import { createDesktopPluginRuntime, setHostPackageManager, type DesktopPnpmLike, type HostPackageManager } from './dsh-cli.ts'
 import { isDshProfileName } from './profile.ts'
 import { mountMarketRoutes, type MarketConfig, type MarketHost } from './routes.ts'
 import { installDesktopMarketSettings, installMarketSettings } from './settings.ts'
@@ -19,10 +19,17 @@ export type Config = Partial<Pick<MarketConfig, 'profile' | 'allowRestart' | 'ma
  * Structural subset of the dsh launcher's public `profileContext` service —
  * "present only in a profile launched by dsh", provided on the host context
  * before any config-tree entry mounts.
+ *
+ * `packageManager` is an optional member of that same public service, not of
+ * the third-party `desktopPnpm` contract: a packaged host ships its own
+ * runtime and names it here instead of relying on a PATH executable. Typed
+ * `unknown` because the launcher owns the shape and the market only reads it
+ * after checking every field (#653).
  */
 interface ProfileContextLike {
   readonly name: string
   readonly dir: string
+  readonly packageManager?: unknown
 }
 
 /** Structural subset of DSH Desktop's public `desktopProfiles` contract. */
@@ -81,6 +88,32 @@ function launchedProfile(context: ProfileContextLike | undefined): { name: strin
 }
 
 /**
+ * The package manager the launcher published for this profile, if any.
+ *
+ * Every field is checked before use, and one bad field discards the whole
+ * invocation rather than half of it: a command without its args or its env
+ * is a tool this process still cannot run, which is the very failure being
+ * fixed. A host that publishes nothing here keeps the PATH and corepack
+ * chain exactly as it was — feature detection, not a hard dependency.
+ */
+function hostPackageManagerOf(context: ProfileContextLike | undefined): HostPackageManager | null {
+  const published = context?.packageManager
+  if (published === null || typeof published !== 'object' || Array.isArray(published)) return null
+  const { command, args, env } = published as { command?: unknown; args?: unknown; env?: unknown }
+  if (typeof command !== 'string' || command.trim() === '') return null
+  if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) return null
+  if (env !== undefined && (env === null || typeof env !== 'object' || Array.isArray(env))) return null
+  // Only string values survive: the child environment is Record<string,
+  // string>, and handing a foreign number or object to spawn is a type it
+  // coerces or drops without saying so.
+  const merged: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries((env ?? {}) as Record<string, unknown>)) {
+    if (typeof value === 'string') merged[key] = value
+  }
+  return { command: command.trim(), args: [...(args as string[])], env: merged }
+}
+
+/**
  * Resolve the host's `agents` inventory lazily — at request time, not at
  * market startup, so the guard sees whichever agents exist by the time an
  * update is asked for. Hosts without the service return undefined and the
@@ -99,7 +132,12 @@ export function apply(ctx: Context, config?: Config): void {
       // still wins; the launcher's own answer comes next, and only then the
       // flag-and-default guesswork. The launcher's directory rides along with
       // its name, and never with somebody else's.
-      const launched = launchedProfile(ctx.get('profileContext') as ProfileContextLike | undefined)
+      const profileContext = ctx.get('profileContext') as ProfileContextLike | undefined
+      const launched = launchedProfile(profileContext)
+      // The launcher's own package manager, when it publishes one. Registering
+      // it here covers both the pnpm probe and every install spawn, since the
+      // invocation's environment reaches both through spawnEnv (#653).
+      setHostPackageManager(hostPackageManagerOf(profileContext))
       const useLaunchedDir = config?.profile === undefined && launched !== undefined
       const resolved: MarketConfig = {
         profile: config?.profile ?? launched?.name ?? argvProfile() ?? 'web',
