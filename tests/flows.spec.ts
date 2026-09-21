@@ -147,6 +147,26 @@ vi.mock('../src/dsh-cli.ts', () => {
       : `lockfileVersion: 9\n  resolution: {tarball: https://codeload.github.com/${repo}/tar.gz/${commit}}\n`
     writeFileSync(path, replaced)
   }
+  // pnpm resolves a gitlab.com / bitbucket.org install to that host's archive
+  // tarball — the commit is inside the URL and there is no `type: git` entry
+  // (measured on 12.4.1, #637).
+  function writeArchiveLockCommit(scheme: string, path: string, commit: string): void {
+    const file = join(fake.profileDir, 'pnpm-lock.yaml')
+    const existing = existsSync(file) ? readFileSync(file, 'utf8') : ''
+    const repoName = path.split('/').pop()!
+    const url = scheme === 'gitlab'
+      ? `https://gitlab.com/${path}/-/archive/${commit}/${repoName}-${commit}.tar.gz`
+      : `https://bitbucket.org/${path}/get/${commit}.tar.gz`
+    const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const own = new RegExp(
+      `https://(?:gitlab\\.com|bitbucket\\.org)/${escaped}/(?:-/archive/[0-9a-f]{40}/[^\\s,}]+|get/[0-9a-f]{40}\\.tar\\.gz)`,
+      'g',
+    )
+    const replaced = existing.replace(own, url)
+    writeFileSync(file, replaced !== existing
+      ? replaced
+      : `${existing === '' ? 'lockfileVersion: 9\n' : existing}  resolution: {gitHosted: true, tarball: ${url}}\n`)
+  }
   // pnpm records a non-codeload git install as `resolution: {commit, repo, type: git}`.
   function writeGitLockCommit(repo: string, commit: string): void {
     const path = join(fake.profileDir, 'pnpm-lock.yaml')
@@ -260,7 +280,10 @@ vi.mock('../src/dsh-cli.ts', () => {
       // current commit and every add-side fault flag still applies (#562).
       const spec = readManifest().dependencies?.[target]
       if (spec === undefined) return { exitCode: 1, timedOut: false, stdout: '', stderr: `fake dsh: ${target} is not installed`, cancelled: false }
-      target = /^(github:|git\+|git@|https?:)/.test(spec) ? spec : `${target}@${spec}`
+      // The shorthands belong in this list for the same reason they belong
+      // in isGitHostedSpec: `gitlab:me/themer` is a source, not the version
+      // half of `themer@…` (#637).
+      target = /^(github:|gitlab:|bitbucket:|git\+|git@|https?:)/.test(spec) ? spec : `${target}@${spec}`
     }
     if (cmd === 'remove') {
       if (fake.failNextRemoveOnce !== '') {
@@ -309,6 +332,30 @@ vi.mock('../src/dsh-cli.ts', () => {
       for (const child of repo.junkChildren ?? []) {
         mkdirSync(join(fake.profileDir, 'node_modules', repo.name, child), { recursive: true })
         writeFileSync(join(fake.profileDir, 'node_modules', repo.name, child, 'package.json'), '{"dsh":{}}')
+      }
+      return ok
+    }
+    // The host shorthands pnpm writes back into the manifest (#637). Same
+    // write path as github:, but the lock entry is the host's archive
+    // tarball, which is where the commit lives.
+    const shorthand = /^(gitlab|bitbucket):([^#\s]+)(?:#(.*))?$/.exec(target)
+    if (shorthand !== null) {
+      const repoKey = `${shorthand[1]!}:${shorthand[2]!}`
+      const repo = fake.repos[target] ?? fake.repos[repoKey]
+      if (repo === undefined) {
+        return { exitCode: 1, timedOut: false, stdout: '', stderr: `fake dsh: unknown repo ${target}`, cancelled: false }
+      }
+      const frag = (shorthand[3] ?? '').split(/[?&]/)[0] ?? ''
+      const commit = /^[0-9a-f]{40}$/i.test(frag) ? frag.toLowerCase() : undefined
+      const def = commit !== undefined ? repo.byCommit?.[commit] : undefined
+      writeDep(repo.name, target)
+      writePkg(repo.name, def?.manifest ?? repo.manifest, def?.artifacts ?? repo.artifacts)
+      const nextCommit = commit ?? repo.lockCommit
+      if (nextCommit !== undefined) writeArchiveLockCommit(shorthand[1]!, shorthand[2]!, nextCommit)
+      if (fake.failAfterWriteStderrOnce !== '') {
+        const stderr = fake.failAfterWriteStderrOnce
+        fake.failAfterWriteStderrOnce = ''
+        return { exitCode: 1, timedOut: false, stdout: '', stderr, cancelled: false }
       }
       return ok
     }
@@ -3393,6 +3440,57 @@ describe('update flow — no npm publishing required', () => {
 
     expect(r.status).toBe(502)
     expect(r.json.error, 'the rollback must be verified, not just attempted').toBeUndefined()
+    const installed = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')) as { version?: string }
+    expect(installed.version).toBe('1.0.0')
+    expect(readFileSync(join(fake.profileDir, 'pnpm-lock.yaml'), 'utf8')).toContain(OLD)
+  })
+
+  it('updates and verifies the rollback of a gitlab: install, whose lock entry is an archive tarball (#637)', async () => {
+    // pnpm writes `gitlab:owner/repo` into the manifest itself, and records
+    // the commit only inside the archive tarball URL — no `type: git` entry,
+    // no codeload. Before this the spec read as an npm name, so the update
+    // installed whatever registry package shares the name; now it is a git
+    // source, the update target is the same shorthand, and the rollback has
+    // to read the identity back out of that URL.
+    const OLD = 'a'.repeat(40)
+    const NEW = 'b'.repeat(40)
+    const spec = 'gitlab:me/themer'
+    const served = {
+      name: 'themer',
+      manifest: { name: 'themer', version: '2.0.0', dsh: {}, main: 'lib/index.js' },
+      artifacts: ['lib/index.js'],
+      lockCommit: NEW,
+      byCommit: {
+        [OLD]: { manifest: { name: 'themer', version: '1.0.0', dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+    fake.repos[spec] = served
+    const manifestPath = join(fake.profileDir, 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.dependencies = { ...(manifest.dependencies ?? {}), themer: spec }
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    const pkgDir = join(fake.profileDir, 'node_modules', 'themer')
+    mkdirSync(join(pkgDir, 'lib'), { recursive: true })
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'themer', version: '1.0.0', dsh: {}, main: 'lib/index.js' }))
+    writeFileSync(join(pkgDir, 'lib', 'index.js'), 'old-gitlab-build')
+    writeFileSync(join(fake.profileDir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\n  resolution: {gitHosted: true, tarball: https://gitlab.com/me/themer/-/archive/${OLD}/themer-${OLD}.tar.gz}\n`)
+    fake.failAfterWriteStderrOnce = 'ELIFECYCLE: git update failed after replacing files'
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'themer' })
+
+    expect(r.status).toBe(502)
+    expect(r.json.error, 'the rollback must be verified, not just attempted').toBeUndefined()
+    // A floating git spec re-resolves in place, and the route only takes that
+    // branch when the update target is byte-identical to the manifest spec —
+    // so this asserts the shorthand was passed back through rather than
+    // rewritten to `git+https://gitlab.com/me/themer.git`.
+    expect(fake.calls.some(call => call[0] === 'update' && call.includes('themer'))).toBe(true)
+    expect(fake.calls.some(call => call.some(arg => arg.includes('git+https://gitlab.com')))).toBe(false)
+    expect(fake.calls.some(call => call.includes(`${spec}#${OLD}`)), 'rollback pins the shorthand at the captured commit').toBe(true)
+    // The pin is how the exact commit is re-added; the manifest is restored
+    // to the spelling it had, so the plugin keeps floating on the shorthand.
+    expect(installedSpec('themer')).toBe(spec)
     const installed = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')) as { version?: string }
     expect(installed.version).toBe('1.0.0')
     expect(readFileSync(join(fake.profileDir, 'pnpm-lock.yaml'), 'utf8')).toContain(OLD)

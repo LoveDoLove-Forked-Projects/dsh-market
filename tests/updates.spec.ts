@@ -328,6 +328,76 @@ describe('checkUpdates — private git hosts (#525)', () => {
     expect(result.themer?.kind).not.toBe('npm')
   })
 
+  // #637: pnpm rewrites a gitlab.com / bitbucket.org install into its own
+  // shorthand, and records the commit as an archive tarball rather than a
+  // `type: git` resolution. Both halves have to be understood, or the row
+  // falls through to npm — and `@gitlab/eslint-plugin`, the package this was
+  // first seen with, really exists on the registry.
+  function archiveProfile(spec: string, tarball: string): string {
+    const dir = join(mkdtempSync(join(tmpdir(), 'dshm-shorthand-')), 'profiles', 'web')
+    mkdirSync(join(dir, 'node_modules', 'themer'), { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { themer: spec } }))
+    writeFileSync(join(dir, 'node_modules', 'themer', 'package.json'), JSON.stringify({ name: 'themer', version: '1.0.0' }))
+    writeFileSync(join(dir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\npackages:\n  themer@${tarball}:\n    resolution: {gitHosted: true, tarball: ${tarball}}\n`)
+    return dir
+  }
+
+  it.each([
+    ['gitlab:me/themer', `https://gitlab.com/me/themer/-/archive/${OLD}/themer-${OLD}.tar.gz`],
+    ['bitbucket:me/themer', `https://bitbucket.org/me/themer/get/${OLD}.tar.gz`],
+  ])('reads %s as a git source and takes its commit from the archive tarball (#637)', async (spec, tarball) => {
+    let npmHits = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const href = String(url)
+      if (href.includes('registry.npmjs.org') || /\/themer\/latest/.test(href)) {
+        npmHits += 1
+        return { ok: true, status: 200, json: async () => ({ version: '9.9.9' }), text: async () => '' }
+      }
+      return {
+        ok: true, status: 200,
+        headers: { get: () => 'application/x-git-upload-pack-advertisement' },
+        json: async () => ({}),
+        text: async () => `001e# service=git-upload-pack\n00000155${HEAD} HEAD\0multi_ack\n`,
+      }
+    }))
+    const result = await checkUpdates('web', true, archiveProfile(spec, tarball))
+    expect(npmHits, 'must not ask the npm registry by package name').toBe(0)
+    expect(result.themer).toMatchObject({ kind: 'github', current: OLD, latest: HEAD, updateAvailable: true })
+  })
+
+  it('compares a branch-pinned shorthand against that branch, not the default one (#446)', async () => {
+    // The archive tarball gives `current` the commit of the ref the install
+    // selected. Asking the remote for HEAD would answer with the default
+    // branch instead — two lines that never converge, so the row would offer
+    // an update forever and the update itself would never move.
+    const NEXT = 'c'.repeat(40)
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200,
+      headers: { get: () => 'application/x-git-upload-pack-advertisement' },
+      json: async () => ({}),
+      text: async () => `001e# service=git-upload-pack\n00000155${HEAD} HEAD\0multi_ack\n0044${NEXT} refs/heads/next\n`,
+    })))
+    const dir = archiveProfile('gitlab:me/themer#next', `https://gitlab.com/me/themer/-/archive/${NEXT}/themer-${NEXT}.tar.gz`)
+    const result = await checkUpdates('web', true, dir)
+    expect(result.themer).toMatchObject({ kind: 'github', current: NEXT, latest: NEXT, updateAvailable: false })
+  })
+
+  it('does not let one host answer for a same-named repo on another (#637)', async () => {
+    // The lockfile holds bitbucket's commit; the install is the gitlab one.
+    // An unqualified owner/repo key would report bitbucket's commit as the
+    // gitlab plugin's — and then "no update available" against gitlab's HEAD.
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200,
+      headers: { get: () => 'application/x-git-upload-pack-advertisement' },
+      json: async () => ({}),
+      text: async () => `001e# service=git-upload-pack\n00000155${HEAD} HEAD\0multi_ack\n`,
+    })))
+    const dir = archiveProfile('gitlab:me/themer', `https://bitbucket.org/me/themer/get/${OLD}.tar.gz`)
+    const result = await checkUpdates('web', true, dir)
+    expect(result.themer?.current).toBeNull()
+  })
+
   it('still treats a bare owner/repo registry shorthand as npm', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true, status: 200, json: async () => ({ version: '1.0.0' }), text: async () => '',
