@@ -222,12 +222,17 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
     // pnpm-workspace.yaml ABOVE the staging tree (a home folder used as a
     // pnpm workspace is the usual one) claims the install together with
     // ITS store. The profile's own node_modules is not the one that
-    // mismatched, so the profile-relink advice below would be wrong here.
-    if (modulesDir !== undefined && /[/\\]\.generations[/\\]/.test(modulesDir)) {
+    // mismatched, so the ordinary profile-relink advice is wrong here.
+    // Match only .generations/staging — a .generations/live path is not
+    // the disposable staging workspace.
+    if (modulesDir !== undefined && /[/\\]\.generations[/\\]staging[/\\]/.test(modulesDir)) {
+      const stores = linked !== undefined && wanted !== undefined
+        ? `\n  node_modules → ${linked}\n  pnpm now wants → ${wanted}`
+        : ''
       return {
         code: 'unexpected-store',
         recoverable: false,
-        message: `桌面端的插件安装暂存目录被上层的一个 pnpm workspace（通常是 ~/pnpm-workspace.yaml，它的 node_modules 链接到另一个 pnpm store）接管，pnpm 因此拒绝在暂存目录里安装。这不是 profile 的 node_modules 的问题，不要按下面的方法去 relink profile。处理办法（任选其一）：给 profile 的 pnpm-workspace.yaml 加一条 allowBuilds 键，让桌面端暂存目录始终自带 workspace 文件；或用那个上层 workspace 自己的 pnpm 大版本重新链接它的 node_modules；或升级 DSH Desktop（新版已隔离暂存目录）。暂存目录 → ${modulesDir}${detail} / the desktop client's install staging directory was claimed by a pnpm workspace above it (usually ~/pnpm-workspace.yaml, whose node_modules links a different pnpm store), so pnpm refuses to install there. This is not the profile's node_modules — do not relink the profile as the general advice below suggests. Fix (any one): add an allowBuilds key to the profile's pnpm-workspace.yaml so desktop staging always carries its own workspace file; or relink that outer workspace's node_modules with its own pnpm major; or update DSH Desktop (newer versions isolate staging). Staging directory → ${modulesDir}${detail}`,
+        message: `the desktop client's install staging directory (.generations/staging) was claimed by a pnpm workspace above it (usually ~/pnpm-workspace.yaml, whose node_modules links a different pnpm store), so pnpm refuses to install there. This is not the profile's node_modules. Fix (any one): relink that outer workspace's node_modules with its own pnpm major; or remove that ancestor pnpm-workspace.yaml if you do not need it. Staging directory → ${modulesDir}${stores}`,
       }
     }
     return {

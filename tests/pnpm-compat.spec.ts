@@ -458,15 +458,30 @@ pnpm now wants to use the store at "C:\\Users\\lenovo\\AppData\\Local\\pnpm\\sto
 The dependencies at "/Users/panda/Library/Application Support/dsh-desktop/harness/profiles/.generations/staging/1b4f/node_modules" are currently linked from the store at "/Users/panda/Library/pnpm/store/v11".
 pnpm now wants to use the store at "/Users/panda/Library/pnpm/store/v10" to link dependencies.`
 
-  it('names the staging directory and its outer workspace when the mismatch is inside .generations staging', () => {
+  it('names the staging directory and both stores when the mismatch is inside .generations/staging', () => {
     // DSH Desktop installs in a disposable staging workspace; when an
     // ancestor pnpm-workspace.yaml claims it, the profile-relink advice is
     // wrong — the profile's node_modules is not the one that mismatched.
     const failure = classifyPnpmFailure(STAGING_OUTPUT)
     expect(failure?.code).toBe('unexpected-store')
     expect(failure?.message).toContain('.generations/staging/1b4f')
-    expect(failure?.message).toContain('do not relink the profile')
+    expect(failure?.message).toContain('/Users/panda/Library/pnpm/store/v11')
+    expect(failure?.message).toContain('/Users/panda/Library/pnpm/store/v10')
+    expect(failure?.message).toContain("This is not the profile's node_modules")
+    expect(failure?.message).toContain('relink that outer workspace')
+    expect(failure?.message).toContain('remove that ancestor pnpm-workspace.yaml')
     expect(failure?.message).not.toContain('--store-dir')
+    expect(failure?.message).not.toContain('allowBuilds')
+    expect(failure?.message).not.toContain('update DSH Desktop')
+  })
+
+  it('keeps the profile-relink advice for a .generations/live path', () => {
+    // live/ is not the disposable staging workspace; do not mis-describe it.
+    const live = STAGING_OUTPUT.replace('.generations/staging/1b4f', '.generations/live/1b4f')
+    const failure = classifyPnpmFailure(live)
+    expect(failure?.code).toBe('unexpected-store')
+    expect(failure?.message).toContain('--store-dir')
+    expect(failure?.message).not.toContain('Staging directory')
   })
 })
 
