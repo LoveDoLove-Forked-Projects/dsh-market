@@ -130,6 +130,10 @@ export function apply(ctx: Context, config?: Config): void {
       const resolved: MarketConfig = {
         profile: current.name,
         profileDirectory: current.dir,
+        // The shell owns the window and the process lifecycle here; the
+        // capability bits report that, and an explicit profile directory no
+        // longer implies it (#639).
+        desktopHost: true,
         // Relaunching a raw Electron process would bypass Desktop's launcher
         // lifecycle. The shell remains responsible for restart in this mode.
         allowRestart: false,

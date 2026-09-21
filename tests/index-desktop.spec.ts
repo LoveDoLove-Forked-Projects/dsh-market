@@ -67,6 +67,18 @@ beforeEach(() => {
 describe('profile the launcher booted (#639)', () => {
   const launcher = { name: 'desktop', dir: '/home/u/.dsh/profiles/desktop' }
 
+  it('does not call an ordinary launcher profile a desktop shell', () => {
+    // The launcher hands every profile its own directory, so the capability
+    // bits must not read that directory as "a Desktop shell serves us" (#639
+    // follow-up).
+    const ctx = new FakeContext({ webServer: {}, loader: {}, profileContext: launcher })
+
+    apply(ctx as never)
+
+    expect(state.mounts[0].config.profileDirectory).toBe(launcher.dir)
+    expect(state.mounts[0].config.desktopHost).toBeUndefined()
+  })
+
   it('uses the launcher profile when no flag and no desktopProfiles service exist', () => {
     // The official desktop host starts a profile through the launcher's node
     // entry: no `--profile` on argv, no `desktopProfiles` service. The market
@@ -139,7 +151,7 @@ describe('profile the launcher booted (#639)', () => {
 
     apply(ctx as never)
 
-    expect(state.mounts[0].config).toMatchObject({ profile: 'shell', profileDirectory: '/shell/dir' })
+    expect(state.mounts[0].config).toMatchObject({ profile: 'shell', profileDirectory: '/shell/dir', desktopHost: true })
   })
 })
 
