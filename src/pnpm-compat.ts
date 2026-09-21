@@ -226,13 +226,10 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
     // Match only .generations/staging — a .generations/live path is not
     // the disposable staging workspace.
     if (modulesDir !== undefined && /[/\\]\.generations[/\\]staging[/\\]/.test(modulesDir)) {
-      const stores = linked !== undefined && wanted !== undefined
-        ? `\n  node_modules → ${linked}\n  pnpm now wants → ${wanted}`
-        : ''
       return {
         code: 'unexpected-store',
         recoverable: false,
-        message: `the desktop client's install staging directory (.generations/staging) was claimed by a pnpm workspace above it (usually ~/pnpm-workspace.yaml, whose node_modules links a different pnpm store), so pnpm refuses to install there. This is not the profile's node_modules. Fix (any one): relink that outer workspace's node_modules with its own pnpm major; or remove that ancestor pnpm-workspace.yaml if you do not need it. Staging directory → ${modulesDir}${stores}`,
+        message: `桌面端的插件安装暂存目录（.generations/staging）被上层的 pnpm workspace 接管（通常是 ~/pnpm-workspace.yaml，它的 node_modules 链到另一个 store），pnpm 因此拒绝在暂存目录里安装。这不是 profile 的 node_modules。处理办法（任选其一）：用那个上层 workspace 自己的 pnpm 大版本重新链接它的 node_modules；或不需要那份祖先 workspace 的话，删掉它的 pnpm-workspace.yaml。暂存目录 → ${modulesDir}${detail} / the desktop client's install staging directory (.generations/staging) was claimed by a pnpm workspace above it (usually ~/pnpm-workspace.yaml, whose node_modules links a different pnpm store), so pnpm refuses to install there. This is not the profile's node_modules. Fix (any one): relink that outer workspace's node_modules with its own pnpm major; or remove that ancestor pnpm-workspace.yaml if you do not need it. Staging directory → ${modulesDir}${detail}`,
       }
     }
     return {
