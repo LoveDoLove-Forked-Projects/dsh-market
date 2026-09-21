@@ -607,7 +607,7 @@ interface Testbed {
 }
 
 function createTestbed(
-  config: { profile?: string; allowRestart?: boolean; profileDirectory?: string; region?: 'global' | 'china' } = {},
+  config: { profile?: string; allowRestart?: boolean; profileDirectory?: string; desktopHost?: boolean; region?: 'global' | 'china' } = {},
   runtime?: Parameters<typeof mountMarketRoutes>[2],
   agents?: AgentsServiceLike,
 ): Testbed {
@@ -1982,6 +1982,29 @@ describe('update flow — no npm publishing required', () => {
     expect(String(r.json.error)).toMatch(/更新会降级|would downgrade/)
     expect(r.json.skipped).toBeUndefined()
     expect(fake.calls).toHaveLength(callsBefore)
+  })
+
+  it('calls the runtime desktop only when a Desktop shell serves it, not when the profile directory is known', async () => {
+    // Before #639 an explicit profile directory meant "a Desktop shell put us
+    // here". The launcher now hands every profile its own directory, so the
+    // directory alone must not flip these bits.
+    bed.dispose()
+    bed = createTestbed({ profileDirectory: fake.profileDir, allowRestart: false })
+    const launched = await bed.dispatch('GET', '/dsh-market/api/v1/capabilities')
+    // Restart is off, so who manages it is answered by the same signal: an
+    // operator disabled it here, no shell took it over.
+    expect(launched.json).toMatchObject({
+      runtime: 'web',
+      restart: { supported: false, managedBy: 'operator' },
+    })
+
+    bed.dispose()
+    bed = createTestbed({ profileDirectory: fake.profileDir, desktopHost: true, allowRestart: false })
+    const shell = await bed.dispatch('GET', '/dsh-market/api/v1/capabilities')
+    expect(shell.json).toMatchObject({
+      runtime: 'desktop',
+      restart: { supported: false, managedBy: 'desktop-host' },
+    })
   })
 
   it('exposes a versioned capability and update-check contract for plugin-owned UIs', async () => {
