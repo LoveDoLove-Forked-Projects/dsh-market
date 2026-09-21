@@ -223,6 +223,24 @@ describe('readInstalledRepoEvidence (#141)', () => {
       .toEqual({ identities: ['mrmolabs/dsh-mermaid'], hints: [] })
   })
 
+  it('treats a host shorthand as a spec that names its own source (#637)', () => {
+    // Same rule as `github:` above, now reached by the two hosts pnpm writes
+    // back as shorthands: a gitlab-installed fork almost always still
+    // declares the upstream GitHub repository, and trusting that would mark
+    // the upstream's Discover card as installed.
+    const dir = writeProfile({ dependencies: { 'dsh-plug': 'gitlab:myfork/dsh-plug' } })
+    const installedDir = join(dir, 'node_modules', 'dsh-plug')
+    mkdirSync(installedDir, { recursive: true })
+    writeFileSync(join(installedDir, 'package.json'), JSON.stringify({
+      name: 'dsh-plug',
+      version: '1.0.0',
+      repository: { type: 'git', url: 'git+https://github.com/upstream/dsh-plug.git' },
+    }))
+
+    expect(readInstalledRepoEvidence('web', 'dsh-plug', 'gitlab:myfork/dsh-plug'))
+      .toEqual({ identities: [], hints: [] })
+  })
+
   it('does NOT read the manifest for a spec that already names its source (#544/#548)', () => {
     // A fork installed as github:myfork/plugin almost always still declares
     // the UPSTREAM repository, because nobody edits that field when forking.
@@ -355,12 +373,71 @@ describe('readDependencyOwners (#634)', () => {
 })
 
 describe('readLockCommits', () => {
-  it('extracts pinned commits from codeload URLs keyed lowercase; empty without a lockfile', () => {
+  const SHA = '0123456789abcdef0123456789abcdef01234567'
+  const OTHER = 'fedcba9876543210fedcba9876543210fedcba98'
+
+  function writeLock(body: string): void {
+    writeProfile({})
+    writeFileSync(join(profileDir('web'), 'pnpm-lock.yaml'), body)
+  }
+
+  it('extracts pinned commits from codeload URLs keyed lowercase by host; empty without a lockfile', () => {
     writeProfile({})
     expect(readLockCommits('web').size).toBe(0)
-    writeFileSync(join(profileDir('web'), 'pnpm-lock.yaml'),
-      '  https://codeload.github.com/Owner/Repo/tar.gz/0123456789abcdef0123456789abcdef01234567:\n')
-    expect(readLockCommits('web').get('owner/repo')).toBe('0123456789abcdef0123456789abcdef01234567')
+    writeLock(`  https://codeload.github.com/Owner/Repo/tar.gz/${SHA}:\n`)
+    expect(readLockCommits('web').get('github.com/owner/repo')).toBe(SHA)
+  })
+
+  // The two lockfile lines below are pnpm 12.4.1's own output, copied from a
+  // real install of each host (#637) — not a guess at the shape.
+  it('reads the GitLab archive tarball, nested group path and all', () => {
+    writeLock('  \'@gitlab/eslint-plugin@https://gitlab.com/gitlab-org/frontend/eslint-plugin/-/archive/'
+      + `${SHA}/eslint-plugin-${SHA}.tar.gz':\n    resolution: {gitHosted: true, tarball: `
+      + `https://gitlab.com/gitlab-org/frontend/eslint-plugin/-/archive/${SHA}/eslint-plugin-${SHA}.tar.gz}\n`)
+    expect(readLockCommits('web').get('gitlab.com/gitlab-org/frontend/eslint-plugin')).toBe(SHA)
+  })
+
+  it('reads the GitLab archive the way pnpm 9 and 10 write it, under the same key', () => {
+    // Those majors fetch through the REST API instead: the repository is
+    // percent-encoded into one path segment and the commit is a query
+    // parameter. Same repository, same commit, so the same key as the
+    // `/-/archive/` shape above — this line is pnpm 9.15.4's own output.
+    writeLock(`  version: https://gitlab.com/api/v4/projects/gitlab-org%2Fgitlab-svgs/repository/archive.tar.gz?sha=${SHA}\n`)
+    expect(readLockCommits('web').get('gitlab.com/gitlab-org/gitlab-svgs')).toBe(SHA)
+  })
+
+  it('reads the Bitbucket archive tarball', () => {
+    writeLock(`  '@atlassian/aui-workspace@https://bitbucket.org/Atlassian/AUI/get/${SHA}.tar.gz':\n`)
+    expect(readLockCommits('web').get('bitbucket.org/atlassian/aui')).toBe(SHA)
+  })
+
+  // The reason the key carries a host at all: one plugin's commit must never
+  // be able to answer for another plugin that happens to share owner/repo.
+  it('keeps the same owner/repo apart across hosts', () => {
+    writeLock(`  https://gitlab.com/me/themer/-/archive/${SHA}/themer-${SHA}.tar.gz\n`
+      + `  https://bitbucket.org/me/themer/get/${OTHER}.tar.gz\n`)
+    const commits = readLockCommits('web')
+    expect(commits.get('gitlab.com/me/themer')).toBe(SHA)
+    expect(commits.get('bitbucket.org/me/themer')).toBe(OTHER)
+    expect(commits.get('me/themer')).toBeUndefined()
+  })
+
+  it('keeps a port in the key, and takes the host from the URL even behind a proxy', () => {
+    writeLock(`  https://git.example.com:8443/me/themer/-/archive/${SHA}/themer-${SHA}.tar.gz\n`
+      + `  https://proxy.example.com/https://gitlab.com/you/themer/-/archive/${OTHER}/themer-${OTHER}.tar.gz\n`)
+    const commits = readLockCommits('web')
+    expect(commits.get('git.example.com:8443/me/themer')).toBe(SHA)
+    expect(commits.get('git.example.com/me/themer')).toBeUndefined()
+    // A proxy in front of the URL is not the repository's host.
+    expect(commits.get('gitlab.com/you/themer')).toBe(OTHER)
+    expect(commits.get('proxy.example.com/https://gitlab.com/you/themer')).toBeUndefined()
+  })
+
+  it('keys a self-hosted GitLab archive under its own host, not gitlab.com', () => {
+    writeLock(`  https://git.example.com/me/themer/-/archive/${SHA}/themer-${SHA}.tar.gz\n`)
+    const commits = readLockCommits('web')
+    expect(commits.get('git.example.com/me/themer')).toBe(SHA)
+    expect(commits.get('gitlab.com/me/themer')).toBeUndefined()
   })
 })
 
@@ -372,6 +449,22 @@ describe('readGitResolutionCommit', () => {
     writeProfile({})
     writeFileSync(join(profileDir('web'), 'pnpm-lock.yaml'), body)
   }
+
+  it('gives a host shorthand nothing rather than another repository\'s commit (#637)', () => {
+    // No pnpm the market supports resolves gitlab.com / bitbucket.org by
+    // cloning — 9.15.4, 10.34.5, 11.8.0 and 12.4.1 all write an archive
+    // tarball, which `readLockCommits` reads — so a `type: git` entry for one
+    // of these hosts does not occur today. This pins the direction the miss
+    // takes if some future pnpm writes one: nothing, which disables rollback
+    // with a clear reason, rather than a same-named repository's commit,
+    // which would roll back to the wrong tree.
+    writeLock(`lockfileVersion: 9\n  resolution: {commit: ${A}, repo: https://gitlab.com/me/themer.git, type: git}\n`)
+
+    expect(readGitResolutionCommit('web', 'gitlab:me/themer')).toBeNull()
+    expect(readGitResolutionCommit('web', 'bitbucket:me/themer')).toBeNull()
+    // The URL spelling of the same install still reads, untouched by #637.
+    expect(readGitResolutionCommit('web', 'git+https://gitlab.com/me/themer.git')).toBe(A)
+  })
 
   it('reads the commit pnpm recorded for a remote, whatever the spelling', () => {
     writeLock(`lockfileVersion: 9\n  resolution: {commit: ${A}, repo: https://gitea.example.com/me/themer.git, type: git}\n`)

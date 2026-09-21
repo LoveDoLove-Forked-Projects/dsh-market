@@ -37,7 +37,7 @@ import { applyBundleOrder, mergeOrder, readBundleRules, readBundleStack, validat
 import { applyPreset, deletePreset, listPresets, previewPreset, savePreset } from './presets.ts'
 import { createProfileSnapshot, DEFAULT_MAX_SNAPSHOTS, deleteSnapshot, listSnapshots, restoreSnapshot } from './snapshot.ts'
 import { trialValidate } from './trial.ts'
-import { codeloadAllowBuildsKey, findCatalogEntryForLocal, findInstalledAlias, gitCommitOfTarget, githubCommitOfTarget, githubTargetAtCommit, gitAllowBuildsKey, gitTargetAtCommit, gitUpdateTarget, installTargetFor, isGenerationLink, isLocalSpec, parseGitHubRemote, NPM_NAME_RE, repoOfTarget, restoreBlockedByWorkspace, restoreTargetForLocal, workspaceProtocolDeps } from './sources.ts'
+import { codeloadAllowBuildsKey, findCatalogEntryForLocal, findInstalledAlias, gitCommitOfTarget, githubCommitOfTarget, githubTargetAtCommit, gitAllowBuildsKey, gitTargetAtCommit, gitUpdateTarget, hostedRepoKey, installTargetFor, isGenerationLink, isLocalSpec, NPM_NAME_RE, repoOfTarget, restoreBlockedByWorkspace, restoreTargetForLocal, workspaceProtocolDeps } from './sources.ts'
 import { failureDetail, groupConflictsByOwner, isStaleUpdate, parseIgnoredBuilds, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, RELEASE_AGE_OVERRIDE, retargetCollections, validateAddedPlugins, withHoistRecovery } from './install.ts'
 import { classifyPnpmFailure } from './pnpm-compat.ts'
 import { asChannel, CHANNELS, DIST_TAG, resolveChannel, type Channel } from './channels.ts'
@@ -880,18 +880,20 @@ export function mountMarketRoutes(
 
   /**
    * The commit pnpm recorded for a git-sourced install, read the way pnpm
-   * wrote it: a `type: git` resolution for a plain remote, and the codeload
-   * tarball for a GitHub one — `git+https://github.com/o/r.git` resolves to
+   * wrote it: a `type: git` resolution for a plain remote, and the host's
+   * archive tarball otherwise — `git+https://github.com/o/r.git` resolves to
    * a tarball, not a git entry, so reading only one of the two would report
-   * a rollback that really happened as unverified (#632).
+   * a rollback that really happened as unverified (#632). gitlab.com and
+   * bitbucket.org resolve to an archive the same way (#637), which is why
+   * the lookup is by `hostedRepoKey` and not by a GitHub repo.
    */
   function gitIdentityCommit(spec: string): string | null {
     const fromGit = readGitResolutionCommit(config.profile, spec, activeProfileDir)
     if (fromGit !== null) return fromGit
-    const github = repoOfTarget(spec)?.split('#')[0] ?? parseGitHubRemote(spec)?.repo ?? null
-    return github === null
+    const key = hostedRepoKey(spec)
+    return key === null
       ? null
-      : readLockCommits(config.profile, activeProfileDir).get(github.toLowerCase()) ?? null
+      : readLockCommits(config.profile, activeProfileDir).get(key) ?? null
   }
 
   function exactGitRollbackTarget(target: string, beforeCommit: string): string | null {

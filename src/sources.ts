@@ -231,12 +231,33 @@ export function repoOfTarget(spec: string): string | null {
  * branch, which is what "is there something newer" means there.
  */
 export function githubRefOfTarget(spec: string): string | null {
-  if (!spec.startsWith('github:')) return null
+  return spec.startsWith('github:') ? refOfFragment(spec) : null
+}
+
+/**
+ * The same question for every OTHER git source — a host shorthand or a plain
+ * remote URL.
+ *
+ * Their update check asks the remote for `HEAD`, which is the default branch.
+ * For an install that selected a branch or tag, that compares the installed
+ * commit against a line the user never chose: the row then offers an update
+ * forever, and the update itself re-resolves inside the same selector and
+ * never moves. That is #446, reached from a different direction.
+ */
+export function gitRefOfTarget(spec: string): string | null {
+  if (!isGitHostedSpec(spec) || spec.startsWith('github:')) return null
+  return refOfFragment(spec)
+}
+
+/** The branch or tag a `#…` fragment selects, or null for the default branch. */
+function refOfFragment(spec: string): string | null {
   const fragmentAt = spec.indexOf('#')
   if (fragmentAt === -1) return null
   for (const selector of spec.slice(fragmentAt + 1).split('&')) {
     if (selector === '' || selector.startsWith('path:/')) continue
     if (/^[0-9a-f]{40}$/i.test(selector)) continue
+    // A commit pin and a semver range both mean "the default branch is the
+    // line to compare against".
     if (selector.startsWith('semver:')) continue
     return selector
   }
@@ -344,7 +365,127 @@ export function isLocalSpec(spec: string): boolean {
 }
 
 /**
- * True when the install came from a git remote — GitHub shortcuts, codeload
+ * The host shorthands pnpm reads as a git source — and writes BACK into
+ * package.json in place of whatever URL the install was typed with.
+ * Measured on pnpm 12.4.1, one real repository per host, both directions:
+ *
+ * | shorthand    | installed as                                     | manifest after                 | lockfile resolution                        |
+ * | ------------ | ------------------------------------------------ | ------------------------------ | ------------------------------------------ |
+ * | `github:`    | `git+https://github.com/sindresorhus/p-limit.git` | `github:sindresorhus/p-limit`  | `codeload.github.com/o/r/tar.gz/<sha>`     |
+ * | `gitlab:`    | `git+https://gitlab.com/gitlab-org/frontend/eslint-plugin.git` | `gitlab:gitlab-org/frontend/eslint-plugin` | `gitlab.com/<path>/-/archive/<sha>/…` |
+ * | `bitbucket:` | `git+https://bitbucket.org/atlassian/aui.git`     | `bitbucket:atlassian/aui`      | `bitbucket.org/o/r/get/<sha>.tar.gz`       |
+ *
+ * The manifest column is the same on 9.15.4, 10.34.5 and 11.8.0 (measured:
+ * every major writes the shorthand back). The lockfile column is NOT —
+ * 9 and 10 fetch GitLab through its REST API — which is why reading the
+ * commit is a table of its own, in `ARCHIVE_COMMIT_SHAPES` (profile.ts).
+ *
+ * That is the whole set on this pnpm, and the negative half was measured
+ * too: `gist:` and `sourcehut:` — hosts `hosted-git-info` knows — are NOT
+ * git sources here. On 12.4.1 `gist:<id>` is looked up on the registry
+ * (`registry…/gist%3A<id>`, 404) and `sourcehut:~me/plug` is refused as an
+ * invalid package name; neither reaches git, so listing them would route a
+ * registry install down the git path. Their answer is per-version — pnpm 9
+ * writes `sourcehut:…` into the manifest as a `link:` — which is exactly why
+ * this is a table to re-measure and extend, not another `if`.
+ *
+ * A shorthand in a manifest is no evidence that pnpm put it there: users
+ * write `gitlab:owner/repo` by hand as well, and the two are identical in
+ * the file. Everything below therefore judges by shape, never by origin.
+ *
+ * GitLab is the one host with nested groups, so its path is not
+ * `owner/repo` — `gitlab:group/subgroup/repo` is a real installable
+ * spelling, and the measured example above is one.
+ */
+const HOST_SHORTHANDS: ReadonlyMap<string, { readonly host: string; readonly nested: boolean }> = new Map([
+  ['github', { host: 'github.com', nested: false }],
+  ['bitbucket', { host: 'bitbucket.org', nested: false }],
+  ['gitlab', { host: 'gitlab.com', nested: true }],
+])
+
+/** The shorthand scheme a spec opens with, whatever follows it. */
+function hostShorthandScheme(spec: string): string | null {
+  const scheme = /^([A-Za-z]+):/.exec(spec.trim())?.[1]?.toLowerCase() ?? null
+  return scheme !== null && HOST_SHORTHANDS.has(scheme) ? scheme : null
+}
+
+export interface HostShorthand {
+  /** Lowercased scheme, i.e. the manifest's own spelling of the host. */
+  scheme: string
+  /** The host that scheme resolves to. */
+  host: string
+  /** `owner/repo`, or a nested group path on GitLab. No `.git`, no fragment. */
+  path: string
+  /** Everything after `#`, empty when the spec carries no selector. */
+  fragment: string
+}
+
+/**
+ * Split `<scheme>:<path>[#<selector>]` into its parts, or null when the spec
+ * is not one of the shorthands above or its path does not fit that host's
+ * shape. Used where a URL or an identity has to be BUILT from the spec;
+ * classification asks `hostShorthandScheme`, which is deliberately looser
+ * because pnpm hands the whole scheme to git regardless of what follows.
+ */
+export function parseHostShorthand(spec: string): HostShorthand | null {
+  const parsed = /^([A-Za-z]+):([^#\s]+)(?:#(.*))?$/.exec(spec.trim())
+  if (parsed === null) return null
+  const scheme = parsed[1]!.toLowerCase()
+  const entry = HOST_SHORTHANDS.get(scheme)
+  if (entry === undefined) return null
+  const path = parsed[2]!.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '')
+  const segments = path.split('/')
+  if (entry.nested ? segments.length < 2 : segments.length !== 2) return null
+  // `.` and `..` pass the charset but are path traversal, not repository
+  // names: the shorthand's clone URL is built from this, and a host would
+  // resolve `owner/../other` to a different project of its own.
+  if (!segments.every(seg => /^[A-Za-z0-9_.-]+$/.test(seg) && seg !== '.' && seg !== '..')) return null
+  return { scheme, host: entry.host, path, fragment: parsed[3] ?? '' }
+}
+
+/**
+ * `host/path`, lowercased: the identity a git-hosted install keeps across
+ * its spellings — the shorthand, the clone URL it was typed as, and the
+ * archive tarball pnpm resolved it to.
+ *
+ * Host-qualified on purpose. `owner/repo` alone is not an identity: the
+ * same pair exists on github.com, gitlab.com and bitbucket.org, and a bare
+ * key would let one host's commit answer for another host's plugin.
+ *
+ * This answers "which repository is this", not "is this a git source" — it
+ * will happily key a registry tarball URL by its host. Ask `isGitHostedSpec`
+ * first, the way every caller here does.
+ */
+export function hostedRepoKey(spec: string): string | null {
+  const shorthand = parseHostShorthand(spec)
+  if (shorthand !== null) return `${shorthand.host}/${shorthand.path}`.toLowerCase()
+  // Codeload before the generic URL below: a legacy region-proxied install
+  // carries the real URL AFTER the proxy's own, and the proxy is not the
+  // host of the repository.
+  const github = repoFromTarget(spec)
+  if (github !== null) return `github.com/${github.repo}`.toLowerCase()
+  let remote = spec.trim().replace(/^git\+/i, '')
+  const scp = /^git@([^/\s:]+):(.+)$/.exec(remote)
+  if (scp !== null) remote = `https://${scp[1]}/${scp[2]!.replace(/^\/+/, '')}`
+  let url: URL
+  try {
+    url = new URL(remote.split('#')[0]!)
+  } catch {
+    return null
+  }
+  if (!/^(?:https?|ssh|git):$/i.test(url.protocol)) return null
+  const path = url.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '')
+  if (path === '') return null
+  if (!path.split('/').every(seg => /^[A-Za-z0-9_.-]+$/.test(seg))) return null
+  // `host`, not `hostname`: a port is part of the identity. Two self-hosted
+  // instances on one machine are two hosts, and the lockfile side keys by
+  // whatever the URL says — dropping the port here would both miss that key
+  // and let `git.example.com:9443` answer with `git.example.com`'s commit.
+  return `${url.host}/${path}`.toLowerCase()
+}
+
+/**
+ * True when the install came from a git remote — host shorthands, codeload
  * tarballs, and any other host (Gitea, GitLab self-host, raw `git+https://…`).
  *
  * Update detection used to ask only `repoOfTarget` (GitHub spellings). A
@@ -355,7 +496,11 @@ export function isLocalSpec(spec: string): boolean {
 export function isGitHostedSpec(spec: string): boolean {
   const s = spec.trim()
   if (s === '' || isLocalSpec(s)) return false
-  if (s.startsWith('github:')) return true
+  // A host shorthand pnpm parses as a git source. Matched by scheme alone,
+  // the way `github:` always was: pnpm hands the whole scheme to git no
+  // matter what follows, so even a malformed path is not an npm name — and
+  // being sent to npm by name is the failure this predicate exists to stop.
+  if (hostShorthandScheme(s) !== null) return true
   if (repoFromTarget(s) !== null) return true
   if (/^git\+/i.test(s) || /^git:\/\//i.test(s) || /^ssh:\/\//i.test(s)) return true
   if (/^git@[^/\s:]+:\S+/.test(s)) return true
@@ -425,6 +570,18 @@ export function gitCommitOfTarget(spec: string): string | null {
 export function gitTargetAtCommit(spec: string, sha: string): string | null {
   if (!/^[0-9a-f]{40}$/.test(sha)) return null
   if (!isGitHostedSpec(spec) || spec.startsWith('github:') || repoFromTarget(spec) !== null) return null
+  const shorthand = parseHostShorthand(spec)
+  if (shorthand !== null) {
+    // The shorthand pinned to the commit. pnpm keeps that spelling verbatim
+    // and resolves it to exactly that commit — measured on 12.4.1: `pnpm add
+    // gitlab:gitlab-org/frontend/eslint-plugin#<sha>` left the pin in the
+    // manifest and wrote the archive tarball of that sha into the lockfile.
+    // A `path:` selector is refused rather than guessed: the
+    // `#<ref>&path:/sub` grammar is measured on `github:` only, and a
+    // rollback that silently restores a sibling package is worse than one
+    // that declines.
+    return /(?:^|&)path:/.test(shorthand.fragment) ? null : `${shorthand.scheme}:${shorthand.path}#${sha}`
+  }
   if (!/^(?:git\+)?(?:https?|ssh|git):\/\//i.test(spec)) return null
   const hash = spec.indexOf('#')
   if (hash !== -1 && /(?:^|&)path:/.test(spec.slice(hash + 1))) return null
@@ -440,6 +597,15 @@ export function gitTargetAtCommit(spec: string, sha: string): string | null {
  * dependency that way and later check/update/rollback can use the first-class
  * GitHub path. This turn still installs through the generic-git target slot
  * (no region acceleration on the rewritten shortcut itself).
+ *
+ * A gitlab/bitbucket shorthand is sent BACK to pnpm as the same shorthand,
+ * and deliberately not rewritten to `git+https://host/owner/repo.git`. Both
+ * install (measured on 12.4.1), but pnpm writes the shorthand into the
+ * manifest either way — so rewriting would send one spelling and get the
+ * other one back, leaving the target we sent, the manifest we then read, the
+ * duplicate-install guard and the allowBuilds key disagreeing about what was
+ * installed. Passthrough keeps all four on the single spelling pnpm itself
+ * settles on.
  */
 export function gitUpdateTarget(spec: string): string | null {
   if (!isGitHostedSpec(spec) || spec.startsWith('github:') || repoFromTarget(spec) !== null) return null
@@ -459,7 +625,15 @@ export function gitUpdateTarget(spec: string): string | null {
   }
   const hash = spec.indexOf('#')
   if (hash === -1) return spec
-  const frag = spec.slice(hash + 1).split(/[?&]/)[0] ?? ''
+  const fragment = spec.slice(hash + 1)
+  // A `path:` selector is what picks this package out of a monorepo. Dropping
+  // the commit pin drops the whole fragment with it, and the install that
+  // follows is the repository ROOT — a different package wearing the same
+  // name. Keep the spec whole instead: the update then re-resolves in place
+  // and reports "already current", which is honest, where the strip silently
+  // replaced the plugin.
+  if (/(?:^|&)path:/.test(fragment)) return spec
+  const frag = fragment.split(/[?&]/)[0] ?? ''
   return /^[0-9a-f]{40}$/i.test(frag) ? spec.slice(0, hash) : spec
 }
 
@@ -469,7 +643,15 @@ export function gitUpdateTarget(spec: string): string | null {
  * Userinfo is stripped so update checks do not resend embedded credentials.
  */
 export function gitUploadPackUrl(spec: string): string | null {
-  let remote = spec.trim().replace(/^git\+/i, '')
+  const shorthand = parseHostShorthand(spec)
+  // A shorthand's own clone URL, where the `.git` suffix is not decoration:
+  // measured on gitlab.com, `…/group/repo/info/refs?service=git-upload-pack`
+  // answers 301 to the project page, while `…/group/repo.git/info/refs`
+  // answers the ref advertisement. bitbucket.org answers both, so the one
+  // spelling serves every host in the table.
+  let remote = shorthand !== null
+    ? `https://${shorthand.host}/${shorthand.path}.git`
+    : spec.trim().replace(/^git\+/i, '')
   const scp = /^git@([^:]+):(.+)$/.exec(remote)
   if (scp !== null) remote = `https://${scp[1]}/${scp[2]!.replace(/^\/*/, '')}`
   const hash = remote.indexOf('#')

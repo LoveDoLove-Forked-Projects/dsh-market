@@ -529,13 +529,77 @@ export function readInstalledRepoEvidence(
   return { identities: [], hints: [] }
 }
 
-/** Pinned commit per `owner/repo` from the profile lockfile's codeload tarball URLs. */
+/**
+ * Where each git host puts the commit in the archive tarball it serves.
+ * Every capture is `1` host, `2` repo path, `3` commit.
+ *
+ * Measured on every major the market supports (9.15.4 / 10.34.5 / 11.8.0 /
+ * 12.4.1): an install from github.com, gitlab.com or bitbucket.org resolves
+ * to an archive of that host and writes NO `type: git` entry, which is why
+ * `readGitResolutionCommit` cannot see any of them. The URL is not the same
+ * on every major, which is what the GitLab pair below is about.
+ *
+ * The host comes out of the URL rather than being assumed from the shape,
+ * so a self-hosted GitLab — which serves the same `/-/archive/` path — keys
+ * under its own hostname instead of sharing gitlab.com's.
+ */
+const ARCHIVE_COMMIT_SHAPES: readonly RegExp[] = [
+  // GitHub. Matched as a substring, not anchored, because a region proxy sits
+  // in FRONT of the real URL: anchoring would only ever see the proxy's own
+  // hostname, while the literal `codeload.github.com` here cannot be anything
+  // but the repository's host.
+  /(codeload\.github\.com)\/([^/\s]+\/[^/\s]+)\/tar\.gz\/([0-9a-f]{40})/g,
+  // GitLab: `…/<group>/<repo>/-/archive/<sha>/<repo>-<sha>.tar.gz`, where the
+  // group may itself be nested. The path excludes `:` so that a proxied URL
+  // cannot be read as one long group path under the proxy's hostname — the
+  // match then starts at the inner URL instead, which is the real host.
+  /https?:\/\/([^/\s]+)\/([^:\s]+?)\/-\/archive\/([0-9a-f]{40})\//g,
+  // Bitbucket: `…/<owner>/<repo>/get/<sha>.tar.gz`.
+  /https?:\/\/([^/\s]+)\/([^/\s]+\/[^/\s]+)\/get\/([0-9a-f]{40})\.tar\.gz/g,
+  // GitLab as pnpm 9 and 10 fetch it — the REST API instead of the project
+  // archive, with the repository percent-encoded into one path segment and
+  // the commit in the query:
+  // `…/api/v4/projects/<owner>%2F<repo>/repository/archive.tar.gz?sha=<sha>`.
+  // Same repository, same commit, different URL; the decode below puts it
+  // back under the same key as the 11/12 shape.
+  /https?:\/\/([^/\s]+)\/api\/v4\/projects\/([^/\s?]+)\/repository\/archive[^\s?]*\?sha=([0-9a-f]{40})/g,
+]
+
+/**
+ * The repository path a shape captured. Percent-decoded because pnpm 9/10
+ * encode the whole `owner/repo` into one segment; the other shapes carry no
+ * `%` at all, so decoding them is a no-op.
+ */
+function archivePath(raw: string): string {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
+/**
+ * Pinned commit per `host/owner/repo` from the archive tarball URLs in the
+ * profile lockfile.
+ *
+ * Keyed by host, not by `owner/repo` alone: gitlab.com and bitbucket.org
+ * hand out the same short owner/repo names GitHub does, and an unqualified
+ * key would let one host's commit answer for a plugin installed from
+ * another — reporting a rollback or an update check against a repository
+ * the user never installed. `hostedRepoKey` builds the same key from a
+ * spec, and is how callers should look one up.
+ */
 export function readLockCommits(profile: string, explicitDir?: string): Map<string, string> {
   const commits = new Map<string, string>()
   try {
     const lock = readFileSync(join(profileDir(profile, explicitDir), 'pnpm-lock.yaml'), 'utf8')
-    for (const m of lock.matchAll(/codeload\.github\.com\/([^/\s]+\/[^/\s]+)\/tar\.gz\/([0-9a-f]{40})/g)) {
-      commits.set(m[1].toLowerCase(), m[2])
+    for (const shape of ARCHIVE_COMMIT_SHAPES) {
+      for (const m of lock.matchAll(shape)) {
+        // codeload is GitHub's download host, not a repository host of its
+        // own: the identity of `codeload.github.com/o/r` is `github.com/o/r`.
+        const host = m[1]!.toLowerCase() === 'codeload.github.com' ? 'github.com' : m[1]!.toLowerCase()
+        commits.set(`${host}/${archivePath(m[2]!).toLowerCase()}`, m[3]!.toLowerCase())
+      }
     }
   } catch { /* no lockfile — no git installs to report */ }
   return commits

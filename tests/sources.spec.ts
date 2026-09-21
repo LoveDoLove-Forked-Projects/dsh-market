@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   githubRefOfTarget,
   findCatalogEntryForLocal, findInstalledAlias, gitAllowBuildsKey, githubRemoteIdentities, githubRepoIdentities, githubRepoIdentity, githubTargetAtCommit, gitTargetAtCommit,
-  gitCommitOfTarget, gitUpdateTarget, gitUploadPackUrl, installTargetFor, isGitHostedSpec, isLocalSpec, lookupRepoFromUrl, parseGitHubRemote, parseGitHubRepository, parseSourceUrl, repoOf, resolveCatalogRestore, restoreBlockedByWorkspace, restoreTargetForLocal, workspaceProtocolDeps,
+  gitCommitOfTarget, gitRefOfTarget, gitUpdateTarget, gitUploadPackUrl, hostedRepoKey, installTargetFor, isGitHostedSpec, isLocalSpec, lookupRepoFromUrl, parseGitHubRemote, parseGitHubRepository, parseSourceUrl, repoOf, resolveCatalogRestore, restoreBlockedByWorkspace, restoreTargetForLocal, workspaceProtocolDeps,
 } from '../src/sources.ts'
 
 describe('parseSourceUrl', () => {
@@ -451,6 +451,7 @@ describe('isGitHostedSpec / gitUpdateTarget (#525)', () => {
   })
 })
 
+
   it('does not conflate "no evidence" with "an empty-string identity" in the memo key (#589)', () => {
     // `[]` and `['']` serialize differently under the JSON key; the matcher
     // treats them differently (an empty-string identity enters the evidence
@@ -462,3 +463,126 @@ describe('isGitHostedSpec / gitUpdateTarget (#525)', () => {
     expect(findCatalogEntryForLocal(plugins, 'dsh-loop', [''])).toBeNull()
     expect(findCatalogEntryForLocal(plugins, 'dsh-loop', [])?.url).toBe('https://github.com/o/dsh-loop')
   })
+
+describe('host shorthands pnpm writes back: gitlab: / bitbucket: (#637)', () => {
+  const SHA = 'a'.repeat(40)
+  const OTHER = 'b'.repeat(40)
+
+  it('reads every shorthand pnpm hands to git as a git source', () => {
+    expect(isGitHostedSpec('gitlab:me/themer')).toBe(true)
+    expect(isGitHostedSpec('bitbucket:me/themer')).toBe(true)
+    // GitLab groups nest; this is a real installable spelling.
+    expect(isGitHostedSpec('gitlab:group/subgroup/themer')).toBe(true)
+    expect(isGitHostedSpec(`gitlab:me/themer#${SHA}`)).toBe(true)
+  })
+
+  it('leaves a host pnpm does NOT parse as git to the npm branch', () => {
+    // Measured on pnpm 12.4.1: both of these resolve against the registry
+    // (`registry…/gist%3A<id>`), so treating them as git sources would send a
+    // registry install down the git path.
+    expect(isGitHostedSpec('gist:0123456789abcdef0123456789abcdef')).toBe(false)
+    expect(isGitHostedSpec('sourcehut:~me/themer')).toBe(false)
+  })
+
+  it('sends the shorthand back to pnpm on update, dropping only a commit pin', () => {
+    // Deliberately NOT rewritten to `git+https://gitlab.com/me/themer.git`:
+    // pnpm writes the shorthand back into the manifest whichever spelling it
+    // is given, so rewriting would leave the target we sent and the spec we
+    // later read disagreeing.
+    expect(gitUpdateTarget('gitlab:me/themer')).toBe('gitlab:me/themer')
+    expect(gitUpdateTarget(`gitlab:me/themer#${SHA}`)).toBe('gitlab:me/themer')
+    expect(gitUpdateTarget('bitbucket:me/themer#v1.2.0')).toBe('bitbucket:me/themer#v1.2.0')
+  })
+
+  it('pins a rollback to the shorthand at a commit, and refuses a path selector', () => {
+    expect(gitTargetAtCommit('gitlab:me/themer', SHA)).toBe(`gitlab:me/themer#${SHA}`)
+    expect(gitTargetAtCommit(`gitlab:me/themer#${OTHER}`, SHA)).toBe(`gitlab:me/themer#${SHA}`)
+    expect(gitTargetAtCommit('bitbucket:me/themer', SHA)).toBe(`bitbucket:me/themer#${SHA}`)
+    // Unmeasured grammar: declining beats restoring a sibling package.
+    expect(gitTargetAtCommit('gitlab:me/mono#path:/packages/themer', SHA)).toBeNull()
+    // github: keeps its own first-class path (githubTargetAtCommit).
+    expect(gitTargetAtCommit('github:o/r', SHA)).toBeNull()
+  })
+
+  it("probes the host's own clone URL, .git suffix included", () => {
+    // gitlab.com answers the ref advertisement on `…/repo.git/info/refs` and
+    // 301s on `…/repo/info/refs`; bitbucket.org answers both.
+    expect(gitUploadPackUrl('gitlab:group/subgroup/themer'))
+      .toBe('https://gitlab.com/group/subgroup/themer.git/info/refs?service=git-upload-pack')
+    expect(gitUploadPackUrl('bitbucket:me/themer'))
+      .toBe('https://bitbucket.org/me/themer.git/info/refs?service=git-upload-pack')
+  })
+
+  it('gives one repository the same identity in every spelling, and keeps hosts apart', () => {
+    expect(hostedRepoKey('gitlab:Me/Themer')).toBe('gitlab.com/me/themer')
+    expect(hostedRepoKey('git+https://gitlab.com/me/themer.git')).toBe('gitlab.com/me/themer')
+    expect(hostedRepoKey(`gitlab:me/themer#${SHA}`)).toBe('gitlab.com/me/themer')
+    expect(hostedRepoKey('gitlab:group/subgroup/themer')).toBe('gitlab.com/group/subgroup/themer')
+    expect(hostedRepoKey('bitbucket:me/themer')).toBe('bitbucket.org/me/themer')
+    // The same owner/repo on three hosts is three plugins.
+    expect(new Set([
+      hostedRepoKey('github:me/themer'),
+      hostedRepoKey('gitlab:me/themer'),
+      hostedRepoKey('bitbucket:me/themer'),
+    ]).size).toBe(3)
+    expect(hostedRepoKey(`https://codeload.github.com/me/themer/tar.gz/${SHA}`)).toBe('github.com/me/themer')
+    // A region proxy carries the real URL after its own; the proxy is not the
+    // repository's host.
+    expect(hostedRepoKey(`https://proxy.example.com/https://codeload.github.com/me/themer/tar.gz/${SHA}`))
+      .toBe('github.com/me/themer')
+    expect(hostedRepoKey('git@gitea.example.com:me/themer.git')).toBe('gitea.example.com/me/themer')
+    expect(hostedRepoKey('themer')).toBeNull()
+    expect(hostedRepoKey('link:../themer')).toBeNull()
+  })
+  it('classifies a malformed shorthand as a broken git source, not as an npm name', () => {
+    // Looser than parseHostShorthand on purpose: pnpm hands the whole scheme
+    // to git whatever follows it, so these are git sources that will fail to
+    // resolve — never names to look up on the registry, which is the failure
+    // #525 and #637 are both about.
+    expect(isGitHostedSpec('gitlab:me')).toBe(true)
+    expect(isGitHostedSpec('bitbucket:a/b/c')).toBe(true)
+    // The identity built FROM a spec stays strict, because it is used to
+    // build URLs and to compare plugins.
+    expect(hostedRepoKey('gitlab:me')).toBeNull()
+    expect(hostedRepoKey('bitbucket:a/b/c')).toBeNull()
+    expect(hostedRepoKey('github:o/r/x')).toBeNull()
+    expect(hostedRepoKey('gitlab:me/the$mer')).toBeNull()
+    // Traversal passes the charset but is not a repository name, and the
+    // clone URL is built from this.
+    expect(hostedRepoKey('gitlab:me/../other')).toBeNull()
+    expect(gitUploadPackUrl('gitlab:me/../other')).toBeNull()
+  })
+
+  it('reads the scheme case-insensitively', () => {
+    expect(hostedRepoKey('GitLab:Me/Themer')).toBe('gitlab.com/me/themer')
+  })
+
+  it('keeps a port in the identity — two instances on one machine are two hosts', () => {
+    expect(hostedRepoKey('git+https://git.example.com:8443/me/themer.git'))
+      .toBe('git.example.com:8443/me/themer')
+    expect(hostedRepoKey('git+https://git.example.com/me/themer.git'))
+      .toBe('git.example.com/me/themer')
+  })
+
+  it('never strips a commit pin that a path: selector hangs off', () => {
+    // Dropping the pin drops the whole fragment, and the install that follows
+    // is the repository ROOT under the plugin's name.
+    const mono = `gitlab:me/mono#${SHA}&path:/packages/themer`
+    expect(gitUpdateTarget(mono)).toBe(mono)
+    const gitea = `git+https://gitea.example.com/me/mono.git#${SHA}&path:/packages/themer`
+    expect(gitUpdateTarget(gitea)).toBe(gitea)
+  })
+
+  it('names the ref an install selected, so the check compares that line (#446)', () => {
+    expect(gitRefOfTarget('gitlab:me/themer#next')).toBe('next')
+    expect(gitRefOfTarget('bitbucket:me/themer#v1.2.0')).toBe('v1.2.0')
+    expect(gitRefOfTarget('git+https://gitea.example.com/me/themer.git#next')).toBe('next')
+    // A pin and a semver range both mean "compare against the default branch".
+    expect(gitRefOfTarget(`gitlab:me/themer#${SHA}`)).toBeNull()
+    expect(gitRefOfTarget('gitlab:me/themer#semver:^1.2.0')).toBeNull()
+    expect(gitRefOfTarget('gitlab:me/themer')).toBeNull()
+    // github: keeps its own extractor; an npm name has no ref at all.
+    expect(gitRefOfTarget('github:o/r#next')).toBeNull()
+    expect(gitRefOfTarget('themer')).toBeNull()
+  })
+})

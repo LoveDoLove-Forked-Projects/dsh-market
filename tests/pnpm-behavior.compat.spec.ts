@@ -15,6 +15,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RELEASE_AGE_OVERRIDE } from '../src/install.ts'
+import { readLockCommits } from '../src/profile.ts'
 import { classifyPnpmFailure, pluginArgsFor } from '../src/pnpm-compat.ts'
 
 /** Last release of each major the market supports; behavior is per-major. */
@@ -386,5 +387,49 @@ describe('#615 — pnpm 12 ignores some --config.<key> flags on the command line
     const viaEnv = peerFixture()
     expect(pnpm(PNPM[11], ['add', '-w', 'use-sync-external-store@1.2.2'], viaEnv, { PNPM_CONFIG_AUTO_INSTALL_PEERS: 'false' }).code).toBe(0)
     expect(installedVersion(viaEnv, 'react')).toBeNull()
+  })
+})
+
+/**
+ * #637 — the host shorthands pnpm writes back into package.json.
+ *
+ * Two things are pinned here per major, because the market reads both and
+ * neither is guessable from the docs: the manifest pnpm leaves behind (the
+ * shorthand, whatever spelling the install was typed as), and the archive URL
+ * it resolves to, which is where the commit lives. The URL is NOT stable
+ * across majors — 9 and 10 fetch GitLab through the REST API
+ * (`/api/v4/projects/<owner>%2F<repo>/repository/archive.tar.gz?sha=`) while
+ * 11 and 12 take the project archive (`/-/archive/<sha>/`) — so what is
+ * asserted is the identity the market derives, not the string.
+ *
+ * `--lockfile-only`: the commit is in the lockfile, and none of these
+ * repositories needs to be extracted or built to prove it.
+ */
+describe('#637 — host shorthands resolve to an archive whose URL carries the commit', () => {
+  // gitlab-org/gitlab-svgs, not a nested group: pnpm 9 percent-encodes only
+  // the last separator and 404s on `group/subgroup/repo`, which is a bug in
+  // that major, not something the market can read its way out of.
+  const SHORTHANDS = [
+    { spec: 'gitlab:gitlab-org/gitlab-svgs', key: 'gitlab.com/gitlab-org/gitlab-svgs' },
+    { spec: 'bitbucket:atlassian/aui', key: 'bitbucket.org/atlassian/aui' },
+  ] as const
+
+  it('writes the shorthand back and records a readable commit on every major', () => {
+    for (const version of [...Object.values(PNPM), DESKTOP_PNPM]) {
+      for (const { spec, key } of SHORTHANDS) {
+        const dir = profileFixture({ workspace: false })
+        const added = pnpm(version, ['add', '--lockfile-only', spec], dir)
+        expect(added.code, `pnpm ${version} ${spec}\n${added.out.slice(-600)}`).toBe(0)
+
+        const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+          dependencies?: Record<string, string>
+        }
+        expect(Object.values(manifest.dependencies ?? {}), `pnpm ${version} manifest`).toEqual([spec])
+
+        const commit = readLockCommits('ignored', dir).get(key)
+        expect(commit, `pnpm ${version} ${spec} lock:\n${readFileSync(join(dir, 'pnpm-lock.yaml'), 'utf8').slice(0, 700)}`)
+          .toMatch(/^[0-9a-f]{40}$/)
+      }
+    }
   })
 })
