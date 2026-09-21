@@ -211,9 +211,30 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
   if (output.includes('ERR_PNPM_UNEXPECTED_STORE')) {
     const linked = /currently linked from the store at "([^"]+)"/.exec(output)?.[1]
     const wanted = /wants to use the store at "([^"]+)"/.exec(output)?.[1]
+    const modulesDir = /The dependencies at "([^"]+)"/.exec(output)?.[1]
     const detail = linked !== undefined && wanted !== undefined
       ? `\n  node_modules → ${linked}\n  pnpm 现在想用 / pnpm now wants → ${wanted}`
       : ''
+    // DSH Desktop installs market plugins in a staging workspace under
+    // $DSH_HOME/profiles/.generations/staging/. When that staging tree
+    // carries no pnpm-workspace.yaml of its own, pnpm resolves the
+    // workspace root by walking the ancestor chain — and a
+    // pnpm-workspace.yaml ABOVE the staging tree (a home folder used as a
+    // pnpm workspace is the usual one) claims the install together with
+    // ITS store. The profile's own node_modules is not the one that
+    // mismatched, so the ordinary profile-relink advice is wrong here.
+    // Match only .generations/staging — a .generations/live path is not
+    // the disposable staging workspace.
+    if (modulesDir !== undefined && /[/\\]\.generations[/\\]staging[/\\]/.test(modulesDir)) {
+      const stores = linked !== undefined && wanted !== undefined
+        ? `\n  node_modules → ${linked}\n  pnpm now wants → ${wanted}`
+        : ''
+      return {
+        code: 'unexpected-store',
+        recoverable: false,
+        message: `the desktop client's install staging directory (.generations/staging) was claimed by a pnpm workspace above it (usually ~/pnpm-workspace.yaml, whose node_modules links a different pnpm store), so pnpm refuses to install there. This is not the profile's node_modules. Fix (any one): relink that outer workspace's node_modules with its own pnpm major; or remove that ancestor pnpm-workspace.yaml if you do not need it. Staging directory → ${modulesDir}${stores}`,
+      }
+    }
     return {
       code: 'unexpected-store',
       recoverable: false,
