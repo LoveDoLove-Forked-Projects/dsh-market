@@ -453,6 +453,21 @@ pnpm now wants to use the store at "C:\\Users\\lenovo\\AppData\\Local\\pnpm\\sto
     expect(failure?.code).toBe('unexpected-store')
     expect(failure?.message).toContain('--store-dir')
   })
+
+  const STAGING_OUTPUT = ` ERR_PNPM_UNEXPECTED_STORE  Unexpected store location
+The dependencies at "/Users/panda/Library/Application Support/dsh-desktop/harness/profiles/.generations/staging/1b4f/node_modules" are currently linked from the store at "/Users/panda/Library/pnpm/store/v11".
+pnpm now wants to use the store at "/Users/panda/Library/pnpm/store/v10" to link dependencies.`
+
+  it('names the staging directory and its outer workspace when the mismatch is inside .generations staging', () => {
+    // DSH Desktop installs in a disposable staging workspace; when an
+    // ancestor pnpm-workspace.yaml claims it, the profile-relink advice is
+    // wrong — the profile's node_modules is not the one that mismatched.
+    const failure = classifyPnpmFailure(STAGING_OUTPUT)
+    expect(failure?.code).toBe('unexpected-store')
+    expect(failure?.message).toContain('.generations/staging/1b4f')
+    expect(failure?.message).toContain('do not relink the profile')
+    expect(failure?.message).not.toContain('--store-dir')
+  })
 })
 
 describe('a pnpm that exists on PATH but cannot be started (#502)', () => {
