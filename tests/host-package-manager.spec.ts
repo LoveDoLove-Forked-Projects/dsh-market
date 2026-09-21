@@ -9,6 +9,14 @@
  *
  * Only the OS process boundary is mocked; the real callers, shim and
  * environment composition are exercised.
+ *
+ * The spawn SHAPE is platform-dependent — on Windows every one of these
+ * commands goes through `cmd.exe /d /s /c` (#80) — so the platform is pinned
+ * per test instead of being inherited from the runner. CI runs this suite on
+ * both ubuntu and windows (.github/workflows/ci.yml, job `check`), and the
+ * first version of this file asserted the POSIX shape unconditionally: it
+ * passed on the machine it was written on and failed four cases on the
+ * windows-latest runner.
  */
 
 import { EventEmitter } from 'node:events'
@@ -29,10 +37,27 @@ function fakeChild() {
 const hostCommand = '/Applications/DSH.app/Contents/Resources/runtime/node'
 const hostArgs = ['/Applications/DSH.app/Contents/Resources/runtime/pnpm.mjs']
 const hostEnv = { PATH: '/Applications/DSH.app/Contents/Resources/runtime', DSH_BUNDLED: '1' }
-const separator = process.platform === 'win32' ? ';' : ':'
+
+/** The command line the shim would build for `<hostCommand> <hostArgs…> --version`. */
+const hostVersionCommandLine = [hostCommand, ...hostArgs, '--version'].join(' ')
+
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
 
 let children: ReturnType<typeof fakeChild>[]
 let home: string
+
+/**
+ * Pin `process.platform` before the module under test is imported: `winCmdShim`
+ * and `COMSPEC` are both captured at import time, so setting it afterwards
+ * would exercise the wrong branch.
+ */
+function platform(value: string): void {
+  Object.defineProperty(process, 'platform', { ...originalPlatform, value })
+}
+
+function separator(): string {
+  return process.platform === 'win32' ? ';' : ':'
+}
 
 /** Resolve the nth spawn (the callers may await before spawning) and exit it. */
 async function exit(index: number, code: number): Promise<void> {
@@ -54,11 +79,16 @@ beforeEach(() => {
     children.push(child)
     return child
   })
+  // POSIX by default, so the assertions below are the same on every runner;
+  // the Windows shape gets its own case rather than being skipped.
+  platform('linux')
+  vi.stubEnv('ComSpec', 'cmd.exe')
   home = mkdtempSync(join(tmpdir(), 'dsh-market-host-pm-'))
   vi.stubEnv('DSH_HOME', home)
 })
 
 afterEach(() => {
+  Object.defineProperty(process, 'platform', originalPlatform)
   vi.unstubAllEnvs()
   vi.resetModules()
   rmSync(home, { recursive: true, force: true })
@@ -82,8 +112,25 @@ describe('probing a host-supplied package manager (#653)', () => {
     // can work at all. Our own settings survive on top of it.
     expect(spawnEnvOf(0).DSH_BUNDLED).toBe('1')
     expect(spawnEnvOf(0).CI).toBe('true')
-    expect(spawnEnvOf(0).PATH.split(separator)[0]).toBe(hostEnv.PATH)
+    expect(spawnEnvOf(0).PATH.split(separator())[0]).toBe(hostEnv.PATH)
     expect(spawnEnvOf(0).PATH).toContain(process.env.PATH ?? '\u0000')
+  })
+
+  it('goes through the Windows shim exactly like every other pnpm spawn', async () => {
+    // Same rule as `probePnpm` on PATH: a host command is spawned through
+    // COMSPEC when the host platform needs a shell to start it.
+    platform('win32')
+    const module = await import('../src/dsh-cli.ts')
+    module.setHostPackageManager(published)
+
+    const probed = module.probePnpm()
+    await exit(0, 0)
+
+    await expect(probed).resolves.toBe(true)
+    const [file, args, options] = childProcess.spawn.mock.calls[0]!
+    expect([file, args]).toEqual(['cmd.exe', ['/d', '/s', '/c', `"${hostVersionCommandLine}"`]])
+    expect(options.windowsVerbatimArguments).toBe(true)
+    expect(options.shell).toBe(false)
   })
 
   it('keeps the PATH fallback for a host invocation that will not run', async () => {
@@ -181,6 +228,6 @@ describe('the host environment reaches an install (#653)', () => {
 
     await expect(install).resolves.toMatchObject({ exitCode: 0 })
     expect(spawnEnvOf(0).DSH_BUNDLED).toBe('1')
-    expect(spawnEnvOf(0).PATH.split(separator)[0]).toBe(hostEnv.PATH)
+    expect(spawnEnvOf(0).PATH.split(separator())[0]).toBe(hostEnv.PATH)
   })
 })
