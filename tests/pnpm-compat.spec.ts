@@ -467,6 +467,8 @@ pnpm now wants to use the store at "/Users/panda/Library/pnpm/store/v10" to link
     expect(failure?.message).toContain('.generations/staging/1b4f')
     expect(failure?.message).toContain('/Users/panda/Library/pnpm/store/v11')
     expect(failure?.message).toContain('/Users/panda/Library/pnpm/store/v10')
+    expect(failure?.message).toContain('这不是 profile 的 node_modules')
+    expect(failure?.message).toContain('暂存目录')
     expect(failure?.message).toContain("This is not the profile's node_modules")
     expect(failure?.message).toContain('relink that outer workspace')
     expect(failure?.message).toContain('remove that ancestor pnpm-workspace.yaml')
@@ -482,6 +484,7 @@ pnpm now wants to use the store at "/Users/panda/Library/pnpm/store/v10" to link
     expect(failure?.code).toBe('unexpected-store')
     expect(failure?.message).toContain('--store-dir')
     expect(failure?.message).not.toContain('Staging directory')
+    expect(failure?.message).not.toContain('暂存目录')
   })
 })
 
