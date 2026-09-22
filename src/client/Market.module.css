@@ -643,6 +643,10 @@
 .groupMember{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f7f8fa);font-size:12px;line-height:18px}
 .groupMember .nm{font-size:12px;flex:1;min-width:0}
 .groupAddPanel{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--dsw-alias-border-l2,#e5e7eb)}
+.groupAddModalList{display:flex;flex-direction:column;gap:6px;max-height:min(50vh,360px);overflow-y:auto;padding-right:2px}
+.groupAddModalHint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b7280);margin:0}
+.groupRenameField{display:flex;flex-direction:column;gap:6px;min-width:0}
+.groupRenameField label{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b7280)}
 .groupCreate{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .inlineInput{flex:1;min-width:120px}
 /* Ungrouped install rows were reusing .irow (column + flex grow), which left a

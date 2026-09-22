@@ -2363,8 +2363,9 @@ describe('#60 groups view', () => {
     // Rename.
     const groupRow = screen.getByText('work').closest('[class*="groupRow"]') as HTMLElement
     fireEvent.click(within(groupRow).getByRole('button', { name: en.groupRename }))
-    fireEvent.change(within(groupRow).getByPlaceholderText(en.groupNamePh), { target: { value: 'daily' } })
-    fireEvent.click(within(groupRow).getByRole('button', { name: en.groupRename }))
+    const renameDialog = await screen.findByRole('dialog')
+    fireEvent.change(within(renameDialog).getByPlaceholderText(en.groupNamePh), { target: { value: 'daily' } })
+    fireEvent.click(within(renameDialog).getByRole('button', { name: en.groupRenameSave }))
     expect(await screen.findByText('daily')).toBeTruthy()
     expect(screen.queryByText('work')).toBeNull()
 
@@ -2448,9 +2449,8 @@ describe('#60 groups view', () => {
 
     // Only dsh-notify is a candidate: dsh-loop is already a member.
     fireEvent.click(await screen.findByRole('button', { name: en.groupAdd }))
-    const addButtons = screen.getAllByRole('button', { name: en.groupAdd })
-    expect(addButtons.length).toBe(2) // header toggle + the candidate row
-    fireEvent.click(addButtons[1])
+    const addDialog = await screen.findByRole('dialog')
+    fireEvent.click(within(addDialog).getByRole('button', { name: en.groupAddPick }))
     await waitFor(() => {
       const set = fetchCalls.find(c => c.path === '/dsh-market/groups' && c.body?.action === 'set-members')
       expect(set?.body).toEqual({ action: 'set-members', name: 'work', members: ['dsh-loop', 'dsh-notify'] })
@@ -2484,9 +2484,8 @@ describe('#60 groups view', () => {
     await openGroupsView()
 
     fireEvent.click(await screen.findByRole('button', { name: en.groupAddTheme }))
-    const themeAddButtons = screen.getAllByRole('button', { name: en.groupAddTheme })
-    expect(themeAddButtons.length).toBe(2) // header toggle + the theme candidate
-    fireEvent.click(themeAddButtons[1])
+    const themeDialog = await screen.findByRole('dialog')
+    fireEvent.click(within(themeDialog).getByRole('button', { name: en.groupAddPick }))
     await waitFor(() => {
       const set = fetchCalls.find(c => c.path === '/dsh-market/groups' && c.body?.action === 'set-members')
       expect(set?.body).toEqual({ action: 'set-members', name: 'looks', members: ['dsh-loop', 'whale-skin'] })

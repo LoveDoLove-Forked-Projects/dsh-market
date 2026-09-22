@@ -4682,60 +4682,48 @@ export function MarketSection(props: MarketSectionProps) {
                                         <span className={css.groupName}>{gid}</span>
                                         {sw === 'mixed' && <span className={css.groupHint}>{t('groupMixed')}</span>}
                                         <div className={css.groupActions}>
-                                          {renamingGroup === gid
-                                            ? (
-                                                <>
-                                                  <Input className={css.inlineInput} placeholder={t('groupNamePh')} value={renamingValue} onChange={e => setRenamingValue(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doRenameGroup(gid) }} autoFocus />
-                                                  <Button variant="primary" size="sm" onClick={() => doRenameGroup(gid)}>{t('groupRename')}</Button>
-                                                  <Button variant="ghost" size="sm" onClick={() => { setRenamingGroup(null); setRenamingValue('') }}>{t('cancel')}</Button>
-                                                </>
-                                              )
-                                            : <Button variant="ghost" size="sm" onClick={() => { setRenamingGroup(gid); setRenamingValue(gid) }}>{t('groupRename')}</Button>}
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => {
+                                              setAddPanel(null)
+                                              setDeletingGroup(null)
+                                              setRenamingGroup(gid)
+                                              setRenamingValue(gid)
+                                            }}
+                                          >{t('groupRename')}</Button>
                                           <Button
                                             variant="outline"
                                             size="sm"
-                                            onClick={() => setAddPanel(
-                                              addPanel !== null && addPanel.group === gid && addPanel.kind === 'plugin'
-                                                ? null
-                                                : { group: gid, kind: 'plugin' },
-                                            )}
+                                            onClick={() => {
+                                              setRenamingGroup(null)
+                                              setDeletingGroup(null)
+                                              setAddPanel(
+                                                addPanel !== null && addPanel.group === gid && addPanel.kind === 'plugin'
+                                                  ? null
+                                                  : { group: gid, kind: 'plugin' },
+                                              )
+                                            }}
                                           >{t('groupAdd')}</Button>
                                           <Button
                                             variant="outline"
                                             size="sm"
                                             disabled={members.some(member => installedThemeNames.has(member))}
-                                            onClick={() => setAddPanel(
-                                              addPanel !== null && addPanel.group === gid && addPanel.kind === 'theme'
-                                                ? null
-                                                : { group: gid, kind: 'theme' },
-                                            )}
+                                            onClick={() => {
+                                              setRenamingGroup(null)
+                                              setDeletingGroup(null)
+                                              setAddPanel(
+                                                addPanel !== null && addPanel.group === gid && addPanel.kind === 'theme'
+                                                  ? null
+                                                  : { group: gid, kind: 'theme' },
+                                              )
+                                            }}
                                           >{t('groupAddTheme')}</Button>
                                           {deletingGroup === gid
                                             ? <Button variant="primary" size="sm" className={css.dangerArmed} onClick={() => doDeleteGroup(gid)}>{t('groupConfirmDelete')}</Button>
                                             : <Button variant="ghost" size="sm" className={css.dangerBtn} onClick={() => setDeletingGroup(gid)}>{t('groupDelete')}</Button>}
                                         </div>
                                       </div>
-                                      {addPanel !== null && addPanel.group === gid && (() => {
-                                        const candidates = addPanel.kind === 'theme'
-                                          ? [...installedThemeNames].filter(name => !members.includes(name))
-                                          : groupableNames.filter(name => !members.includes(name) && !installedThemeNames.has(name))
-                                        return (
-                                          <div className={css.groupAddPanel}>
-                                            {candidates.length === 0
-                                              ? <div className={css.groupHint}>{t('groupAddEmpty')}</div>
-                                              : candidates.map(name => (
-                                                  <div className={css.groupMember} key={name}>
-                                                    <span className={css.nm}>{name}</span>
-                                                    {effectiveDisabledSet.has(name) && <span className={css.spec}>{t('disabledState')}</span>}
-                                                    <span className={css.grow} />
-                                                    <Button variant="outline" size="sm" onClick={() => doAddMember(gid, name)}>
-                                                      {addPanel.kind === 'theme' ? t('groupAddTheme') : t('groupAdd')}
-                                                    </Button>
-                                                  </div>
-                                                ))}
-                                          </div>
-                                        )
-                                      })()}
                                       <div className={css.groupMembers}>
                                         {members.length === 0 && <div className={css.groupHint}>{t('groupEmpty')}</div>}
                                         {members.map(member => (
@@ -5148,6 +5136,74 @@ export function MarketSection(props: MarketSectionProps) {
           </span>
         </Tooltip>
       )}
+      {renamingGroup !== null && (
+        <Modal
+          open
+          onClose={() => { setRenamingGroup(null); setRenamingValue('') }}
+          title={t('groupRenameTitle')}
+          footer={(
+            <>
+              <Button variant="ghost" onClick={() => { setRenamingGroup(null); setRenamingValue('') }}>{t('cancel')}</Button>
+              <Button
+                variant="primary"
+                disabled={renamingValue.trim() === '' || renamingValue.trim() === renamingGroup}
+                onClick={() => doRenameGroup(renamingGroup)}
+              >{t('groupRenameSave')}</Button>
+            </>
+          )}
+        >
+          <div className={css.groupRenameField}>
+            <label htmlFor="dsh-market-group-rename">{t('groupNamePh')}</label>
+            <Input
+              id="dsh-market-group-rename"
+              className={css.inlineInput}
+              placeholder={t('groupNamePh')}
+              value={renamingValue}
+              onChange={e => setRenamingValue(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') doRenameGroup(renamingGroup) }}
+              autoFocus
+            />
+          </div>
+        </Modal>
+      )}
+      {addPanel !== null && (() => {
+        const members = groups[addPanel.group] ?? []
+        const candidates = addPanel.kind === 'theme'
+          ? [...installedThemeNames].filter(name => !members.includes(name))
+          : groupableNames.filter(name => !members.includes(name) && !installedThemeNames.has(name))
+        const emptyLabel = addPanel.kind === 'theme' ? t('groupAddThemeEmpty') : t('groupAddEmpty')
+        return (
+          <Modal
+            open
+            onClose={() => setAddPanel(null)}
+            title={(addPanel.kind === 'theme' ? t('groupAddTheme') : t('groupAdd')) + ' · ' + addPanel.group}
+            footer={<Button variant="ghost" onClick={() => setAddPanel(null)}>{t('cancel')}</Button>}
+          >
+            {candidates.length === 0
+              ? <p className={css.groupAddModalHint}>{emptyLabel}</p>
+              : (
+                  <div className={css.groupAddModalList}>
+                    {candidates.map(name => (
+                      <div className={css.groupMember} key={name}>
+                        <span className={css.nm}>{name}</span>
+                        {effectiveDisabledSet.has(name) && <span className={css.spec}>{t('disabledState')}</span>}
+                        <span className={css.grow} />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            doAddMember(addPanel.group, name)
+                            // Themes are exclusive per group — close once one lands.
+                            if (addPanel.kind === 'theme') setAddPanel(null)
+                          }}
+                        >{t('groupAddPick')}</Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+          </Modal>
+        )
+      })()}
       {confirming !== null && (
         <Modal
           open
