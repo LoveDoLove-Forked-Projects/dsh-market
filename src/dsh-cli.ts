@@ -274,6 +274,10 @@ function spawnEnv(): NodeJS.ProcessEnv {
   for (const bin of toolSearchDirs()) {
     if (!parts.includes(bin)) parts.push(bin)
   }
+  // hostEnv follows process.env. PATH is `parts` below: host entries, then
+  // the inherited PATH. That PATH is never empty, so dropping the host
+  // entries whenever it is already set would leave the bundled Node off
+  // the path (#653).
   return {
     ...process.env,
     ...hostEnv,
