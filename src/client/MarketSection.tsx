@@ -465,7 +465,6 @@ function renderMarkdown(md: string): Array<JSX.Element | string> {
   return out
 }
 
-/** Avatar fallback advances one service route at a time before using initials. */
 export function OwnerAvatar({ name, owner }: { name: string; owner: string }) {
   const [failed, setFailed] = useState(false)
   const [routeIndex, setRouteIndex] = useState(0)
@@ -1501,10 +1500,16 @@ export function MarketSection(props: MarketSectionProps) {
   const [renamingGroup, setRenamingGroup] = useState<string | null>(null)
   const [renamingValue, setRenamingValue] = useState('')
   const [deletingGroup, setDeletingGroup] = useState<string | null>(null)
-  /** Open group picker: which group and whether it adds plugins or themes. */
-  const [addPanel, setAddPanel] = useState<{ group: string; kind: 'plugin' | 'theme' } | null>(null)
+  /** Open add-members picker for this group name. Plugins only. */
+  const [addPanel, setAddPanel] = useState<string | null>(null)
+  const [addQuery, setAddQuery] = useState('')
+  const [addSelected, setAddSelected] = useState<string[]>([])
+  /** Group whose single theme slot is being chosen. */
+  const [themePanel, setThemePanel] = useState<string | null>(null)
+  const [themePick, setThemePick] = useState<string | null>(null)
+  const [groupMenuFor, setGroupMenuFor] = useState<string | null>(null)
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set())
   const [assignFor, setAssignFor] = useState<string | null>(null)
-  const [assignTarget, setAssignTarget] = useState('')
   /** Structured progress from pnpm ndjson (P1-6). */
   const [progressPhase, setProgressPhase] = useState<MarketStatus['phase']>(null)
   const [progressCurrent, setProgressCurrent] = useState<string | null>(null)
@@ -3149,28 +3154,51 @@ export function MarketSection(props: MarketSectionProps) {
     })
   }, [doGroupAction])
 
-  const doAssign = useCallback((name: string) => {
-    const group = assignTarget
+  const doAssign = useCallback((name: string, group: string) => {
     if (group === '') return
     const members = groups[group] ?? []
     void doGroupAction({ action: 'set-members', name: group, members: [...members, name] }).then(ok => {
-      if (ok) {
-        setAssignFor(null)
-        setAssignTarget('')
-      }
+      if (ok) setAssignFor(null)
     })
-  }, [assignTarget, doGroupAction, groups])
+  }, [doGroupAction, groups])
 
   const doRemoveMember = useCallback((group: string, name: string) => {
     const members = (groups[group] ?? []).filter(member => member !== name)
     void doGroupAction({ action: 'set-members', name: group, members })
   }, [doGroupAction, groups])
 
-  /** Add one installed plugin to a group (picker stays open for batch adds). */
-  const doAddMember = useCallback((group: string, name: string) => {
-    const members = groups[group] ?? []
-    void doGroupAction({ action: 'set-members', name: group, members: [...members, name] })
-  }, [doGroupAction, groups])
+  /** Open the multi-select add-members dialog for a group. Plugins only. */
+  const openAddPanel = useCallback((group: string) => {
+    setRenamingGroup(null)
+    setDeletingGroup(null)
+    setGroupMenuFor(null)
+    setThemePanel(null)
+    setAddQuery('')
+    setAddSelected([])
+    setAddPanel(group)
+  }, [])
+
+  /** Commit the current multi-select into the open group. */
+  const doAddSelectedMembers = useCallback(() => {
+    if (addPanel === null || addSelected.length === 0) return
+    const members = groups[addPanel] ?? []
+    const next = [...members]
+    for (const name of addSelected) {
+      if (!next.includes(name)) next.push(name)
+    }
+    void doGroupAction({ action: 'set-members', name: addPanel, members: next }).then(ok => {
+      if (ok) setAddPanel(null)
+    })
+  }, [addPanel, addSelected, doGroupAction, groups])
+
+  const toggleCollapsedGroup = useCallback((gid: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(gid)) next.delete(gid)
+      else next.add(gid)
+      return next
+    })
+  }, [])
 
   // The market itself stays out of the batch: its update reloads this page
   // mid-run, which would strand the remaining items.
@@ -3904,6 +3932,27 @@ export function MarketSection(props: MarketSectionProps) {
   /** Names already inside some group; everything else shows under "ungrouped". */
   const groupedNames = useMemo(() => new Set(Object.values(groups).flat()), [groups])
   const ungroupedNames = groupableNames.filter(name => !groupedNames.has(name))
+  const groupQuery = qInstalled.trim().toLowerCase()
+  const matchesInstalledQuery = useCallback((name: string) => {
+    if (groupQuery === '') return true
+    if (name.toLowerCase().includes(groupQuery)) return true
+    const note = notes[name]
+    if (note !== undefined && note.toLowerCase().includes(groupQuery)) return true
+    const spec = installed[name]
+    if (spec !== undefined && String(spec).toLowerCase().includes(groupQuery)) return true
+    if (data !== null && spec !== undefined) {
+      const entry = catalogEntryForInstalled(data.plugins, name, String(spec), repoIdentities[name], repoHints[name])
+      const desc = (entry?.description && (entry.description[lang] || entry.description.en)) || ''
+      if (desc.toLowerCase().includes(groupQuery)) return true
+    }
+    return false
+  }, [data, groupQuery, installed, lang, notes, repoHints, repoIdentities])
+  const visibleUngrouped = ungroupedNames.filter(matchesInstalledQuery)
+  const visibleGroupIds = groupOrder.filter(gid => {
+    if (groupQuery === '') return true
+    if (gid.toLowerCase().includes(groupQuery)) return true
+    return (groups[gid] ?? []).some(matchesInstalledQuery)
+  })
   /** Installed package names the catalog classifies as themes (client-side
    * mirror of the server's classification; themes are exclusive per group). */
   const installedThemeNames = useMemo(() => {
@@ -3915,6 +3964,26 @@ export function MarketSection(props: MarketSectionProps) {
     }
     return names
   }, [data, installed, repoIdentities, repoHints])
+
+  const openThemePanel = useCallback((group: string) => {
+    const current = (groups[group] ?? []).find(name => installedThemeNames.has(name)) ?? null
+    setAddPanel(null)
+    setRenamingGroup(null)
+    setDeletingGroup(null)
+    setGroupMenuFor(null)
+    setThemePick(current)
+    setThemePanel(group)
+  }, [groups, installedThemeNames])
+
+  /** Set or clear the single theme slot. The previous theme leaves this group. */
+  const applyGroupTheme = useCallback((group: string, themeName: string | null) => {
+    const members = groups[group] ?? []
+    const without = members.filter(name => !installedThemeNames.has(name))
+    const next = themeName === null ? without : [...without, themeName]
+    void doGroupAction({ action: 'set-members', name: group, members: next }).then(ok => {
+      if (ok) setThemePanel(null)
+    })
+  }, [doGroupAction, groups, installedThemeNames])
 
   return (
     <div
@@ -4645,29 +4714,52 @@ export function MarketSection(props: MarketSectionProps) {
                   </div>
                   <div className={css.tabSearchRow}>
                     <SearchInput key="installed" resetToken={installedSearchReset} className={css.tabSearch} placeholder={t('searchPh')} value={qInstalled} onCommit={setQInstalled} />
+                    {installedView === 'groups' && (
+                      creatingGroup
+                        ? (
+                            <div className={css.groupCreateInline}>
+                              <Input className={css.inlineInput} placeholder={t('groupNamePh')} value={newGroupName} onChange={e => setNewGroupName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doCreateGroup() }} autoFocus />
+                              <Button variant="primary" size="sm" onClick={doCreateGroup}>{t('groupCreate')}</Button>
+                              <Button variant="ghost" size="sm" onClick={() => { setCreatingGroup(false); setNewGroupName('') }}>{t('cancel')}</Button>
+                            </div>
+                          )
+                        : <Button variant="outline" size="sm" onClick={() => setCreatingGroup(true)}>{t('groupNew')}</Button>
+                    )}
                   </div>
                   {installedView === 'groups'
                       ? (
                           <>
-                            <div className={css.groupCreate}>
-                              {creatingGroup
-                                ? (
-                                    <>
-                                      <Input className={css.inlineInput} placeholder={t('groupNamePh')} value={newGroupName} onChange={e => setNewGroupName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doCreateGroup() }} autoFocus />
-                                      <Button variant="primary" size="sm" onClick={doCreateGroup}>{t('groupCreate')}</Button>
-                                      <Button variant="ghost" size="sm" onClick={() => { setCreatingGroup(false); setNewGroupName('') }}>{t('cancel')}</Button>
-                                    </>
-                                  )
-                                : <Button variant="outline" size="sm" onClick={() => setCreatingGroup(true)}>{t('groupNew')}</Button>}
-                            </div>
-                            {groupOrder.length === 0
+                            {groupQuery === '' && groupOrder.length === 0
                               ? <div className={css.empty}>{t('noGroups')}</div>
-                              : groupOrder.map(gid => {
+                              : visibleGroupIds.map(gid => {
                                   const members = groups[gid] ?? []
+                                  const nameHit = groupQuery !== '' && gid.toLowerCase().includes(groupQuery)
+                                  const visibleMembers = (groupQuery === '' || nameHit
+                                    ? members
+                                    : members.filter(matchesInstalledQuery)
+                                  ).slice().sort((a, b) => Number(installedThemeNames.has(b)) - Number(installedThemeNames.has(a)))
+                                  const themeSlot = visibleMembers.some(name => installedThemeNames.has(name)) && visibleMembers.some(name => !installedThemeNames.has(name))
+                                  if (groupQuery !== '' && !nameHit && visibleMembers.length === 0) return null
                                   const sw = groupSwitchState(members, effectiveDisabledSet)
+                                  const enabledCount = members.filter(member => !effectiveDisabledSet.has(member)).length
+                                  const collapsed = groupQuery === '' && collapsedGroups.has(gid)
+                                  const meta = t('groupMembersMeta')
+                                    .replace('{0}', String(members.length))
+                                    .replace('{1}', String(enabledCount))
                                   return (
                                     <div className={css.groupRow} key={gid}>
                                       <div className={css.groupHead}>
+                                        <button
+                                          type="button"
+                                          className={css.groupCollapse}
+                                          aria-expanded={!collapsed}
+                                          aria-label={(collapsed ? t('groupExpand') : t('groupFold')).replace('{0}', gid)}
+                                          onClick={() => toggleCollapsedGroup(gid)}
+                                        >
+                                          {collapsed
+                                            ? <IconChevronRightOutline14 size={14} />
+                                            : <IconChevronDownOutline14 size={14} />}
+                                        </button>
                                         <button
                                           type="button"
                                           role="switch"
@@ -4679,112 +4771,187 @@ export function MarketSection(props: MarketSectionProps) {
                                         >
                                           <span className={css.switchKnob} />
                                         </button>
-                                        <span className={css.groupName}>{gid}</span>
-                                        {sw === 'mixed' && <span className={css.groupHint}>{t('groupMixed')}</span>}
+                                        <div className={css.groupTitle}>
+                                          <span className={css.groupName}>{gid}</span>
+                                          <span className={css.groupMeta}>{meta}</span>
+                                          {sw === 'mixed' && <span className={css.groupHint}>{t('groupMixed')}</span>}
+                                        </div>
                                         <div className={css.groupActions}>
                                           <Button
-                                            variant="ghost"
+                                            variant="outline"
                                             size="sm"
-                                            onClick={() => {
-                                              setAddPanel(null)
-                                              setDeletingGroup(null)
-                                              setRenamingGroup(gid)
-                                              setRenamingValue(gid)
-                                            }}
-                                          >{t('groupRename')}</Button>
+                                            onClick={() => openThemePanel(gid)}
+                                          >{members.some(member => installedThemeNames.has(member)) ? t('groupChangeTheme') : t('groupPickTheme')}</Button>
                                           <Button
                                             variant="outline"
                                             size="sm"
-                                            onClick={() => {
-                                              setRenamingGroup(null)
-                                              setDeletingGroup(null)
-                                              setAddPanel(
-                                                addPanel !== null && addPanel.group === gid && addPanel.kind === 'plugin'
-                                                  ? null
-                                                  : { group: gid, kind: 'plugin' },
-                                              )
-                                            }}
+                                            onClick={() => openAddPanel(gid)}
                                           >{t('groupAdd')}</Button>
-                                          <Button
-                                            variant="outline"
-                                            size="sm"
-                                            disabled={members.some(member => installedThemeNames.has(member))}
-                                            onClick={() => {
-                                              setRenamingGroup(null)
-                                              setDeletingGroup(null)
-                                              setAddPanel(
-                                                addPanel !== null && addPanel.group === gid && addPanel.kind === 'theme'
-                                                  ? null
-                                                  : { group: gid, kind: 'theme' },
-                                              )
-                                            }}
-                                          >{t('groupAddTheme')}</Button>
                                           {deletingGroup === gid
-                                            ? <Button variant="primary" size="sm" className={css.dangerArmed} onClick={() => doDeleteGroup(gid)}>{t('groupConfirmDelete')}</Button>
-                                            : <Button variant="ghost" size="sm" className={css.dangerBtn} onClick={() => setDeletingGroup(gid)}>{t('groupDelete')}</Button>}
+                                            ? (
+                                                <>
+                                                  <Button variant="primary" size="sm" className={css.dangerArmed} onClick={() => doDeleteGroup(gid)}>{t('groupConfirmDelete')}</Button>
+                                                  <Button variant="ghost" size="sm" onClick={() => setDeletingGroup(null)}>{t('cancel')}</Button>
+                                                </>
+                                              )
+                                            : (
+                                                <Menu
+                                                  open={groupMenuFor === gid}
+                                                  onClose={() => setGroupMenuFor(null)}
+                                                  onSelect={id => {
+                                                    setGroupMenuFor(null)
+                                                    if (id === 'rename') {
+                                                      setAddPanel(null)
+                                                      setDeletingGroup(null)
+                                                      setRenamingGroup(gid)
+                                                      setRenamingValue(gid)
+                                                    } else if (id === 'delete') {
+                                                      setAddPanel(null)
+                                                      setRenamingGroup(null)
+                                                      setDeletingGroup(gid)
+                                                    }
+                                                  }}
+                                                  align="end"
+                                                  portal
+                                                  anchor={(
+                                                    <Button
+                                                      variant="ghost"
+                                                      size="sm"
+                                                      aria-label={t('groupMore')}
+                                                      onClick={() => setGroupMenuFor(open => open === gid ? null : gid)}
+                                                    >···</Button>
+                                                  )}
+                                                  items={[
+                                                    { id: 'rename', label: t('groupRename') },
+                                                    { id: 'delete', label: t('groupDelete') },
+                                                  ]}
+                                                />
+                                              )}
                                         </div>
                                       </div>
-                                      <div className={css.groupMembers}>
-                                        {members.length === 0 && <div className={css.groupHint}>{t('groupEmpty')}</div>}
-                                        {members.map(member => (
-                                          <div className={css.groupMember} key={member}>
-                                            <span className={css.nm}>{member}</span>
-                                            {effectiveDisabledSet.has(member) && <span className={css.spec}>{t('disabledState')}</span>}
-                                            <span className={css.grow} />
-                                            <button
-                                              type="button"
-                                              role="switch"
-                                              aria-checked={!effectiveDisabledSet.has(member)}
-                                              aria-label={(effectiveDisabledSet.has(member) ? t('enable') : t('disable')) + ' ' + member}
-                                              className={effectiveDisabledSet.has(member) ? css.switch : `${css.switch} ${css.switchOn}`}
-                                              disabled={togglingName !== null}
-                                              onClick={() => doToggle(member, effectiveDisabledSet.has(member))}
-                                            >
-                                              <span className={css.switchKnob} />
-                                            </button>
-                                            <Button variant="ghost" size="sm" onClick={() => doRemoveMember(gid, member)}>{t('groupRemove')}</Button>
+                                      {!collapsed && (
+                                        <div className={css.groupMembers}>
+                                          {members.length === 0 && <div className={css.groupHint}>{t('groupEmpty')}</div>}
+                                          {visibleMembers.map(member => (
+                                            <div className={installedThemeNames.has(member) && themeSlot ? `${css.groupMember} ${css.themeSlot}` : css.groupMember} key={member}>
+                                              <span className={css.memberName}>
+                                                <span className={css.nm}>{member}</span>
+                                                {installedThemeNames.has(member) && <span className={css.memberKind}>· {t('groupThemeBadge')}</span>}
+                                              </span>
+                                              {effectiveDisabledSet.has(member) && <span className={css.spec}>{t('disabledState')}</span>}
+                                              <button
+                                                type="button"
+                                                role="switch"
+                                                aria-checked={!effectiveDisabledSet.has(member)}
+                                                aria-label={(effectiveDisabledSet.has(member) ? t('enable') : t('disable')) + ' ' + member}
+                                                className={effectiveDisabledSet.has(member) ? css.switch : `${css.switch} ${css.switchOn}`}
+                                                disabled={togglingName !== null}
+                                                onClick={() => doToggle(member, effectiveDisabledSet.has(member))}
+                                              >
+                                                <span className={css.switchKnob} />
+                                              </button>
+                                              <Button variant="ghost" size="sm" onClick={() => doRemoveMember(gid, member)}>{t('groupRemove')}</Button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                            {(groupQuery === '' || visibleUngrouped.length > 0) && (
+                            <div className={css.groupRow}>
+                              <div className={css.groupHead}>
+                                <div className={css.groupTitle}>
+                                  <span className={css.groupName}>{t('ungrouped')}</span>
+                                  <span className={css.groupMeta}>
+                                    {t('groupMembersMeta')
+                                      .replace('{0}', String((groupQuery === '' ? ungroupedNames : visibleUngrouped).length))
+                                      .replace('{1}', String((groupQuery === '' ? ungroupedNames : visibleUngrouped).filter(name => !effectiveDisabledSet.has(name)).length))}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className={css.groupMembers}>
+                                {(groupQuery === '' ? ungroupedNames : visibleUngrouped).length === 0
+                                  ? <div className={css.empty}>{t('installedEmpty')}</div>
+                                  : visibleUngrouped.map(name => {
+                                      const entry = data === null ? undefined : catalogEntryForInstalled(data.plugins, name, String(installed[name]), repoIdentities[name], repoHints[name])
+                                      const off = effectiveDisabledSet.has(name)
+                                      const act = activations[name]
+                                      const meta = !off && act !== undefined ? activationMeta(act.state, t, act.dependencyOf) : null
+                                      const note = notes[name]
+                                      const authored = (entry?.description && (entry.description[lang] || entry.description.en)) || ''
+                                      const shown = note ?? authored
+                                      const stateLabel = off
+                                        ? t('disabledState')
+                                        : act?.state === 'inert' && act.dependencyOf === undefined
+                                          ? t('groupStateInert')
+                                          : act?.state === 'restart'
+                                            ? t('groupStateRestart')
+                                            : act?.state === 'broken'
+                                              ? t('groupStateBroken')
+                                              : meta?.label
+                                      const stateDot = off ? 'warning' as const : meta?.dot === 'error' ? 'error' as const : meta?.dot === 'warning' ? 'warning' as const : 'done' as const
+                                      const stateClass = stateDot === 'error' ? css.actBroken : stateDot === 'warning' ? css.actWarn : css.actLive
+                                      return (
+                                        <div className={`${css.groupMember} ${css.ungroupedRow}`} key={'ug-' + name}>
+                                          <span className={css.nm} title={name}>
+                                            {name}
+                                            {entry?.deprecated === true && <span className={css.depBadge}>{t('deprecatedBadge')}</span>}
+                                          </span>
+                                          {installedThemeNames.has(name) && <span className={css.memberKind}>· {t('groupThemeBadge')}</span>}
+                                          {stateLabel !== undefined && (
+                                            <span className={css.ungroupedState}>
+                                              <span className={stateClass} title={stateLabel}><StateDot state={stateDot} size={7} />{stateLabel}</span>
+                                            </span>
+                                          )}
+                                          {shown !== '' && (
+                                            <Tooltip label={shown} side="top" maxWidth={320}>
+                                              <span className={note !== undefined ? `${css.ungroupedDesc} ${css.noteMine}` : css.ungroupedDesc}>{shown}</span>
+                                            </Tooltip>
+                                          )}
+                                          <div className={css.groupMemberAction}>
+                                            <Menu
+                                              open={assignFor === name}
+                                              onClose={() => setAssignFor(null)}
+                                              onSelect={id => {
+                                                const blocked = installedThemeNames.has(name)
+                                                  && (groups[id] ?? []).some(member => installedThemeNames.has(member))
+                                                if (blocked) return
+                                                setAssignFor(null)
+                                                doAssign(name, id)
+                                              }}
+                                              align="end"
+                                              portal
+                                              anchor={(
+                                                <Button
+                                                  variant="outline"
+                                                  size="sm"
+                                                  disabled={groupOrder.length === 0}
+                                                  icon={assignFor === name ? <IconChevronUpOutline14 size={14} /> : <IconChevronDownOutline14 size={14} />}
+                                                  onClick={() => setAssignFor(open => open === name ? null : name)}
+                                                >{t('groupAssign')}</Button>
+                                              )}
+                                              items={groupOrder.map(gid => {
+                                                const blocked = installedThemeNames.has(name)
+                                                  && (groups[gid] ?? []).some(member => installedThemeNames.has(member))
+                                                return {
+                                                  id: gid,
+                                                  disabled: blocked,
+                                                  label: blocked ? gid + ' · ' + t('groupThemeTaken') : gid,
+                                                }
+                                              })}
+                                            />
                                           </div>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  )
-                                })}
-                            <div className={css.sect}>{t('ungrouped')}</div>
-                            {ungroupedNames.length === 0
-                              ? <div className={css.empty}>{t('installedEmpty')}</div>
-                              : ungroupedNames.map(name => {
-                                  const entry = data === null ? undefined : catalogEntryForInstalled(data.plugins, name, String(installed[name]), repoIdentities[name], repoHints[name])
-                                  const off = effectiveDisabledSet.has(name)
-                                  return (
-                                    <div className={css.ungroupedRow} key={'ug-' + name}>
-                                      <div className={css.ungroupedMeta}>
-                                        <div className={css.nm}>
-                                          {name}
-                                          {entry?.deprecated === true && <span className={css.depBadge}>{t('deprecatedBadge')}</span>}
                                         </div>
-                                        <div className={css.act}>
-                                          {off
-                                            ? <span className={css.actWarn}><StateDot state="warning" size={7} />{t('disabledState')}</span>
-                                            : <span className={css.actLive}><StateDot state="done" size={7} />{t('stateLive')}</span>}
-                                        </div>
-                                      </div>
-                                      <div className={css.ungroupedActions}>
-                                        {assignFor === name
-                                          ? (
-                                              <div className={css.assignRow}>
-                                                <select className={css.assignSelect} value={assignTarget} onChange={e => setAssignTarget(e.target.value)}>
-                                                  <option value="">{t('groupNamePh')}</option>
-                                                  {groupOrder.map(gid => <option key={gid} value={gid}>{gid}</option>)}
-                                                </select>
-                                                <Button variant="primary" size="sm" disabled={assignTarget === ''} onClick={() => doAssign(name)}>{t('groupAssign')}</Button>
-                                                <Button variant="ghost" size="sm" onClick={() => { setAssignFor(null); setAssignTarget('') }}>{t('cancel')}</Button>
-                                              </div>
-                                            )
-                                          : <Button variant="ghost" size="sm" disabled={groupOrder.length === 0} onClick={() => { setAssignFor(name); setAssignTarget('') }}>{t('groupAssign')}</Button>}
-                                      </div>
-                                    </div>
-                                  )
-                                })}
+                                      )
+                                    })}
+                              </div>
+                            </div>
+                            )}
+                            {groupQuery !== '' && visibleGroupIds.length === 0 && visibleUngrouped.length === 0 && (
+                              <div className={css.empty}>{t('groupSearchEmpty')}</div>
+                            )}
+                            <p className={css.groupOrgHint}>{t('groupOrgHint')}</p>
                           </>
                         )
                       : Object.keys(displayedInstalled).filter(name => name !== selfName).length === 0
@@ -5141,6 +5308,7 @@ export function MarketSection(props: MarketSectionProps) {
           open
           onClose={() => { setRenamingGroup(null); setRenamingValue('') }}
           title={t('groupRenameTitle')}
+          description={t('groupRenameHint')}
           footer={(
             <>
               <Button variant="ghost" onClick={() => { setRenamingGroup(null); setRenamingValue('') }}>{t('cancel')}</Button>
@@ -5160,6 +5328,7 @@ export function MarketSection(props: MarketSectionProps) {
               placeholder={t('groupNamePh')}
               value={renamingValue}
               onChange={e => setRenamingValue(e.target.value)}
+              onFocus={e => e.currentTarget.select()}
               onKeyDown={e => { if (e.key === 'Enter') doRenameGroup(renamingGroup) }}
               autoFocus
             />
@@ -5167,40 +5336,107 @@ export function MarketSection(props: MarketSectionProps) {
         </Modal>
       )}
       {addPanel !== null && (() => {
-        const members = groups[addPanel.group] ?? []
-        const candidates = addPanel.kind === 'theme'
-          ? [...installedThemeNames].filter(name => !members.includes(name))
-          : groupableNames.filter(name => !members.includes(name) && !installedThemeNames.has(name))
-        const emptyLabel = addPanel.kind === 'theme' ? t('groupAddThemeEmpty') : t('groupAddEmpty')
+        const members = groups[addPanel] ?? []
+        const pluginCandidates = ungroupedNames.filter(name => !installedThemeNames.has(name) && !members.includes(name))
+        const needle = addQuery.trim().toLowerCase()
+        const candidates = needle === ''
+          ? pluginCandidates
+          : pluginCandidates.filter(name => name.toLowerCase().includes(needle))
         return (
           <Modal
             open
             onClose={() => setAddPanel(null)}
-            title={(addPanel.kind === 'theme' ? t('groupAddTheme') : t('groupAdd')) + ' · ' + addPanel.group}
-            footer={<Button variant="ghost" onClick={() => setAddPanel(null)}>{t('cancel')}</Button>}
+            title={t('groupAddTitle').replace('{0}', addPanel)}
+            footer={(
+              <>
+                <span className={css.groupAddFooterMeta}>
+                  {t('groupAddSelected').replace('{0}', String(addSelected.length))}
+                </span>
+                <Button variant="ghost" onClick={() => setAddPanel(null)}>{t('cancel')}</Button>
+                <Button
+                  variant="primary"
+                  disabled={addSelected.length === 0}
+                  onClick={doAddSelectedMembers}
+                >{t('groupAddConfirm').replace('{0}', String(addSelected.length))}</Button>
+              </>
+            )}
           >
-            {candidates.length === 0
-              ? <p className={css.groupAddModalHint}>{emptyLabel}</p>
-              : (
-                  <div className={css.groupAddModalList}>
-                    {candidates.map(name => (
-                      <div className={css.groupMember} key={name}>
-                        <span className={css.nm}>{name}</span>
-                        {effectiveDisabledSet.has(name) && <span className={css.spec}>{t('disabledState')}</span>}
-                        <span className={css.grow} />
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            doAddMember(addPanel.group, name)
-                            // Themes are exclusive per group — close once one lands.
-                            if (addPanel.kind === 'theme') setAddPanel(null)
-                          }}
-                        >{t('groupAddPick')}</Button>
-                      </div>
-                    ))}
-                  </div>
+            <div className={css.groupAddModalBody}>
+              <SearchInput
+                value={addQuery}
+                onCommit={setAddQuery}
+                placeholder={t('groupAddSearchPh')}
+              />
+              {candidates.length === 0
+                ? <p className={css.groupAddModalHint}>{t('groupAddEmpty')}</p>
+                : (
+                    <div className={css.groupAddModalList}>
+                      {candidates.map(name => (
+                        <label className={css.groupAddPick} key={name}>
+                          <input
+                            type="checkbox"
+                            checked={addSelected.includes(name)}
+                            onChange={() => setAddSelected(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name])}
+                          />
+                          <span className={css.nm}>{name}</span>
+                          {effectiveDisabledSet.has(name) && <span className={css.spec}>{t('disabledState')}</span>}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+              <p className={css.groupAddModalHint}>{t('groupAddHint')}</p>
+            </div>
+          </Modal>
+        )
+      })()}
+      {themePanel !== null && (() => {
+        const members = groups[themePanel] ?? []
+        const current = members.find(name => installedThemeNames.has(name)) ?? null
+        const choices = [
+          ...(current !== null ? [current] : []),
+          ...ungroupedNames.filter(name => installedThemeNames.has(name)),
+        ]
+        return (
+          <Modal
+            open
+            onClose={() => setThemePanel(null)}
+            title={t('groupThemeTitle').replace('{0}', themePanel)}
+            footer={(
+              <>
+                {current !== null && (
+                  <Button variant="ghost" onClick={() => applyGroupTheme(themePanel, null)}>{t('groupThemeRemove')}</Button>
                 )}
+                <span className={css.groupAddFooterMeta} />
+                <Button variant="ghost" onClick={() => setThemePanel(null)}>{t('cancel')}</Button>
+                <Button
+                  variant="primary"
+                  disabled={themePick === null || themePick === current}
+                  onClick={() => { if (themePick !== null) applyGroupTheme(themePanel, themePick) }}
+                >{t('groupThemeUse')}</Button>
+              </>
+            )}
+          >
+            <div className={css.groupAddModalBody}>
+              <p className={css.groupAddModalHint}>{t('groupThemeHint')}</p>
+              {choices.length === 0
+                ? <p className={css.groupAddModalHint}>{t('groupThemeEmpty')}</p>
+                : (
+                    <div className={css.groupAddModalList} role="radiogroup" aria-label={t('groupPickTheme')}>
+                      {choices.map(name => (
+                        <label className={css.groupAddPick} key={name}>
+                          <input
+                            type="radio"
+                            name="dsh-market-group-theme"
+                            checked={themePick === name}
+                            onChange={() => setThemePick(name)}
+                          />
+                          <span className={css.nm}>{name}</span>
+                          {name === current && <span className={css.spec}>{t('groupThemeCurrent')}</span>}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+            </div>
           </Modal>
         )
       })()}
