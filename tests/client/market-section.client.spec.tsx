@@ -2346,7 +2346,7 @@ describe('#60 groups view', () => {
     expect(await screen.findByText('work')).toBeTruthy()
 
     // Assign dsh-loop into the group from the ungrouped list.
-    const loopRow = screen.getByText('dsh-loop').closest('[class*="irow"]') as HTMLElement
+    const loopRow = screen.getByText('dsh-loop').closest('[class*="ungroupedRow"]') as HTMLElement
     fireEvent.click(within(loopRow).getByRole('button', { name: en.groupAssign }))
     fireEvent.change(within(loopRow).getByRole('combobox'), { target: { value: 'work' } })
     fireEvent.click(within(loopRow).getByRole('button', { name: en.groupAssign }))

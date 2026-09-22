@@ -4681,7 +4681,6 @@ export function MarketSection(props: MarketSectionProps) {
                                         </button>
                                         <span className={css.groupName}>{gid}</span>
                                         {sw === 'mixed' && <span className={css.groupHint}>{t('groupMixed')}</span>}
-                                        <span className={css.grow} />
                                         <div className={css.groupActions}>
                                           {renamingGroup === gid
                                             ? (
@@ -4692,9 +4691,6 @@ export function MarketSection(props: MarketSectionProps) {
                                                 </>
                                               )
                                             : <Button variant="ghost" size="sm" onClick={() => { setRenamingGroup(gid); setRenamingValue(gid) }}>{t('groupRename')}</Button>}
-                                          {deletingGroup === gid
-                                            ? <Button variant="primary" size="sm" className={css.dangerArmed} onClick={() => doDeleteGroup(gid)}>{t('groupConfirmDelete')}</Button>
-                                            : <Button variant="outline" size="sm" className={css.dangerBtn} onClick={() => setDeletingGroup(gid)}>{t('groupDelete')}</Button>}
                                           <Button
                                             variant="outline"
                                             size="sm"
@@ -4714,6 +4710,9 @@ export function MarketSection(props: MarketSectionProps) {
                                                 : { group: gid, kind: 'theme' },
                                             )}
                                           >{t('groupAddTheme')}</Button>
+                                          {deletingGroup === gid
+                                            ? <Button variant="primary" size="sm" className={css.dangerArmed} onClick={() => doDeleteGroup(gid)}>{t('groupConfirmDelete')}</Button>
+                                            : <Button variant="ghost" size="sm" className={css.dangerBtn} onClick={() => setDeletingGroup(gid)}>{t('groupDelete')}</Button>}
                                         </div>
                                       </div>
                                       {addPanel !== null && addPanel.group === gid && (() => {
@@ -4769,8 +4768,8 @@ export function MarketSection(props: MarketSectionProps) {
                                   const entry = data === null ? undefined : catalogEntryForInstalled(data.plugins, name, String(installed[name]), repoIdentities[name], repoHints[name])
                                   const off = effectiveDisabledSet.has(name)
                                   return (
-                                    <div className={css.irow} key={'ug-' + name}>
-                                      <div style={{ minWidth: 0 }}>
+                                    <div className={css.ungroupedRow} key={'ug-' + name}>
+                                      <div className={css.ungroupedMeta}>
                                         <div className={css.nm}>
                                           {name}
                                           {entry?.deprecated === true && <span className={css.depBadge}>{t('deprecatedBadge')}</span>}
@@ -4781,19 +4780,20 @@ export function MarketSection(props: MarketSectionProps) {
                                             : <span className={css.actLive}><StateDot state="done" size={7} />{t('stateLive')}</span>}
                                         </div>
                                       </div>
-                                      <span className={css.grow} />
-                                      {assignFor === name
-                                        ? (
-                                            <div className={css.assignRow}>
-                                              <select className={css.assignSelect} value={assignTarget} onChange={e => setAssignTarget(e.target.value)}>
-                                                <option value="">{t('groupNamePh')}</option>
-                                                {groupOrder.map(gid => <option key={gid} value={gid}>{gid}</option>)}
-                                              </select>
-                                              <Button variant="primary" size="sm" disabled={assignTarget === ''} onClick={() => doAssign(name)}>{t('groupAssign')}</Button>
-                                              <Button variant="ghost" size="sm" onClick={() => { setAssignFor(null); setAssignTarget('') }}>{t('cancel')}</Button>
-                                            </div>
-                                          )
-                                        : <Button variant="outline" size="sm" disabled={groupOrder.length === 0} onClick={() => { setAssignFor(name); setAssignTarget('') }}>{t('groupAssign')}</Button>}
+                                      <div className={css.ungroupedActions}>
+                                        {assignFor === name
+                                          ? (
+                                              <div className={css.assignRow}>
+                                                <select className={css.assignSelect} value={assignTarget} onChange={e => setAssignTarget(e.target.value)}>
+                                                  <option value="">{t('groupNamePh')}</option>
+                                                  {groupOrder.map(gid => <option key={gid} value={gid}>{gid}</option>)}
+                                                </select>
+                                                <Button variant="primary" size="sm" disabled={assignTarget === ''} onClick={() => doAssign(name)}>{t('groupAssign')}</Button>
+                                                <Button variant="ghost" size="sm" onClick={() => { setAssignFor(null); setAssignTarget('') }}>{t('cancel')}</Button>
+                                              </div>
+                                            )
+                                          : <Button variant="ghost" size="sm" disabled={groupOrder.length === 0} onClick={() => { setAssignFor(name); setAssignTarget('') }}>{t('groupAssign')}</Button>}
+                                      </div>
                                     </div>
                                   )
                                 })}

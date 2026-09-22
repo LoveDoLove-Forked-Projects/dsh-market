@@ -636,18 +636,27 @@
 .viewBtn:hover{color:var(--dsw-alias-brand-primary,#4f6ef7)}
 .viewOn{background:var(--dsw-alias-bg-layer-2,#eef0f4);color:var(--dsw-alias-label-primary,#1f2328);font-weight:600}
 .groupRow{background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:12px;padding:12px 14px;margin-bottom:10px}
-.groupHead{display:flex;align-items:center;gap:10px;min-width:0}
+.groupHead{display:flex;align-items:center;gap:10px;min-width:0;flex-wrap:wrap}
 .groupName{font-weight:600;font-size:13px;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.groupActions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.groupActions{display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap;margin-left:auto}
 .groupMembers{display:flex;flex-direction:column;gap:6px;margin-top:10px}
 .groupMember{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f7f8fa);font-size:12px;line-height:18px}
 .groupMember .nm{font-size:12px;flex:1;min-width:0}
 .groupAddPanel{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px dashed var(--dsw-alias-border-l2,#e5e7eb)}
 .groupCreate{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .inlineInput{flex:1;min-width:120px}
+/* Ungrouped install rows were reusing .irow (column + flex grow), which left a
+   tall empty band above a full-width Assign control. Keep them one dense row. */
+.ungroupedRow{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 12px;margin-bottom:8px;
+  background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:10px}
+.ungroupedMeta{min-width:0;flex:1 1 auto}
+.ungroupedMeta .nm{font-size:13px;line-height:20px}
+.ungroupedMeta .act{margin-top:2px}
+.ungroupedActions{display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap}
 .assignRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .assignSelect{border:1px solid var(--dsw-alias-border-l2,#e5e7eb);background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#1f2328);border-radius:6px;padding:3px 6px;font:inherit;font-size:12px;line-height:18px}
 .groupHint{font-size:11px;color:var(--dsw-alias-label-tertiary,#8b93a1)}
+.sect{margin:14px 2px 8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#6b7280)}
 .sectAction{margin:14px 2px 8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#6b7280);display:flex;align-items:center;gap:8px}
 
 /* #61: profile backup & restore */
