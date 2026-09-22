@@ -3593,11 +3593,9 @@ export function MarketSection(props: MarketSectionProps) {
         <div className={css.foot}>
           <div className={css.footTags}>
             <span
-          className={compatibility?.status === 'compatible'
-            ? css.hostRequirementOk
-            : compatibility?.status === 'incompatible'
-              ? css.hostRequirementBad
-              : css.hostRequirement}
+          className={compatibility?.status === 'incompatible'
+            ? `${css.hostRequirement} ${css.hostRequirementBad}`
+            : css.hostRequirement}
           data-status={compatibility?.status ?? 'unknown'}
           title={(compatibility?.status === 'compatible' || compatibility?.status === 'incompatible'
             ? t(compatibility.status === 'compatible' ? 'hostStatusCompatible' : 'hostStatusIncompatible') + '\n'
