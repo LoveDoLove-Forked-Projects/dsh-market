@@ -2272,12 +2272,13 @@ describe('#60 catalog deprecation', () => {
 
 describe('#60 groups view', () => {
   /** Stateful fake: mirrors the server-side group/toggle semantics in memory. */
-  function makeFake(installed: Record<string, string>) {
+  function makeFake(installed: Record<string, string>, activationOverride?: Record<string, unknown>) {
     const state = { disabled: [] as string[], groups: {} as Record<string, string[]>, groupOrder: [] as string[] }
     const activation: Record<string, unknown> = {}
     for (const name of Object.keys(installed)) {
       activation[name] = { state: 'live', reasons: [], bundle: true, hot: true }
     }
+    if (activationOverride !== undefined) Object.assign(activation, activationOverride)
     stubFetch({
       '/dsh-market/installed': () => ({
         profile: 'web',
@@ -2339,6 +2340,13 @@ describe('#60 groups view', () => {
     await openGroupsView()
     expect(await screen.findByText(en.noGroups)).toBeTruthy()
 
+    // Leaving the inline editor restores the New group button.
+    fireEvent.click(screen.getByRole('button', { name: en.groupNew }))
+    fireEvent.change(screen.getByPlaceholderText(en.groupNamePh), { target: { value: 'draft' } })
+    fireEvent.focusOut(screen.getByPlaceholderText(en.groupNamePh))
+    expect(screen.getByRole('button', { name: en.groupNew })).toBeTruthy()
+    expect(screen.queryByPlaceholderText(en.groupNamePh)).toBeNull()
+
     // Create.
     fireEvent.click(screen.getByRole('button', { name: en.groupNew }))
     fireEvent.change(screen.getByPlaceholderText(en.groupNamePh), { target: { value: 'work' } })
@@ -2346,10 +2354,9 @@ describe('#60 groups view', () => {
     expect(await screen.findByText('work')).toBeTruthy()
 
     // Assign dsh-loop into the group from the ungrouped list.
-    const loopRow = screen.getByText('dsh-loop').closest('[class*="irow"]') as HTMLElement
+    const loopRow = screen.getByText('dsh-loop').closest('[class*="groupMember"]') as HTMLElement
     fireEvent.click(within(loopRow).getByRole('button', { name: en.groupAssign }))
-    fireEvent.change(within(loopRow).getByRole('combobox'), { target: { value: 'work' } })
-    fireEvent.click(within(loopRow).getByRole('button', { name: en.groupAssign }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'work' }))
     await waitFor(() => {
       const row = screen.getByText('dsh-loop').closest('[class*="groupMember"]') as HTMLElement | null
       expect(row).not.toBeNull()
@@ -2360,17 +2367,20 @@ describe('#60 groups view', () => {
     fireEvent.click(within(memberRow).getByRole('button', { name: en.groupRemove }))
     await waitFor(() => expect(screen.getByText(en.groupEmpty)).toBeTruthy())
 
-    // Rename.
+    // Rename via overflow menu.
     const groupRow = screen.getByText('work').closest('[class*="groupRow"]') as HTMLElement
-    fireEvent.click(within(groupRow).getByRole('button', { name: en.groupRename }))
-    fireEvent.change(within(groupRow).getByPlaceholderText(en.groupNamePh), { target: { value: 'daily' } })
-    fireEvent.click(within(groupRow).getByRole('button', { name: en.groupRename }))
+    fireEvent.click(within(groupRow).getByRole('button', { name: en.groupMore }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: en.groupRename }))
+    const renameDialog = await screen.findByRole('dialog')
+    fireEvent.change(within(renameDialog).getByPlaceholderText(en.groupNamePh), { target: { value: 'daily' } })
+    fireEvent.click(within(renameDialog).getByRole('button', { name: en.groupRenameSave }))
     expect(await screen.findByText('daily')).toBeTruthy()
     expect(screen.queryByText('work')).toBeNull()
 
-    // Delete.
+    // Delete via overflow menu + confirm.
     const dailyRow = screen.getByText('daily').closest('[class*="groupRow"]') as HTMLElement
-    fireEvent.click(within(dailyRow).getByRole('button', { name: en.groupDelete }))
+    fireEvent.click(within(dailyRow).getByRole('button', { name: en.groupMore }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: en.groupDelete }))
     fireEvent.click(within(dailyRow).getByRole('button', { name: en.groupConfirmDelete }))
     expect(await screen.findByText(en.noGroups)).toBeTruthy()
   })
@@ -2438,7 +2448,7 @@ describe('#60 groups view', () => {
     expect(screen.getByText(en.disabledState)).toBeTruthy()
   })
 
-  it('the Add plugin button lists installed plugins and adds them via set-members', async () => {
+  it('the Add members button lists installed plugins and adds them via set-members', async () => {
     const state = makeFake({ 'dsh-loop': '^1.0.0', 'dsh-notify': '^1.0.0' })
     state.groups['work'] = ['dsh-loop']
     state.groupOrder.push('work')
@@ -2448,9 +2458,9 @@ describe('#60 groups view', () => {
 
     // Only dsh-notify is a candidate: dsh-loop is already a member.
     fireEvent.click(await screen.findByRole('button', { name: en.groupAdd }))
-    const addButtons = screen.getAllByRole('button', { name: en.groupAdd })
-    expect(addButtons.length).toBe(2) // header toggle + the candidate row
-    fireEvent.click(addButtons[1])
+    const addDialog = await screen.findByRole('dialog')
+    fireEvent.click(within(addDialog).getByRole('checkbox', { name: /dsh-notify/ }))
+    fireEvent.click(within(addDialog).getByRole('button', { name: en.groupAddConfirm.replace('{0}', '1') }))
     await waitFor(() => {
       const set = fetchCalls.find(c => c.path === '/dsh-market/groups' && c.body?.action === 'set-members')
       expect(set?.body).toEqual({ action: 'set-members', name: 'work', members: ['dsh-loop', 'dsh-notify'] })
@@ -2462,20 +2472,20 @@ describe('#60 groups view', () => {
     })
   })
 
-  it('disables Add theme when the group already holds a theme', async () => {
+  it('keeps themes out of the plugin member picker', async () => {
     const state = makeFake({ 'dsh-loop': '^1.0.0', 'whale-skin': '^1.0.0' })
-    state.groups['looks'] = ['whale-skin']
+    state.groups['looks'] = []
     state.groupOrder.push('looks')
     render(<MarketSection {...props()} />)
     await screen.findByText('whale-skin')
     await openGroupsView()
-    const addTheme = await screen.findByRole('button', { name: en.groupAddTheme })
-    expect((addTheme as HTMLButtonElement).disabled).toBe(true)
-    // Ordinary plugin adds stay available.
-    expect((screen.getByRole('button', { name: en.groupAdd }) as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(await screen.findByRole('button', { name: en.groupAdd }))
+    const addDialog = await screen.findByRole('dialog')
+    expect(within(addDialog).queryByRole('checkbox', { name: /whale-skin/ })).toBeNull()
+    expect(within(addDialog).getByRole('checkbox', { name: /dsh-loop/ })).toBeTruthy()
   })
 
-  it('Add theme lists installed theme plugins and adds one via set-members', async () => {
+  it('chooses one theme for a group from the theme slot', async () => {
     const state = makeFake({ 'dsh-loop': '^1.0.0', 'whale-skin': '^1.0.0' })
     state.groups['looks'] = ['dsh-loop']
     state.groupOrder.push('looks')
@@ -2483,17 +2493,61 @@ describe('#60 groups view', () => {
     await screen.findByText('whale-skin')
     await openGroupsView()
 
-    fireEvent.click(await screen.findByRole('button', { name: en.groupAddTheme }))
-    const themeAddButtons = screen.getAllByRole('button', { name: en.groupAddTheme })
-    expect(themeAddButtons.length).toBe(2) // header toggle + the theme candidate
-    fireEvent.click(themeAddButtons[1])
+    fireEvent.click(await screen.findByRole('button', { name: en.groupPickTheme }))
+    const themeDialog = await screen.findByRole('dialog')
+    fireEvent.click(within(themeDialog).getByRole('radio', { name: /whale-skin/ }))
+    fireEvent.click(within(themeDialog).getByRole('button', { name: en.groupThemeUse }))
     await waitFor(() => {
       const set = fetchCalls.find(c => c.path === '/dsh-market/groups' && c.body?.action === 'set-members')
       expect(set?.body).toEqual({ action: 'set-members', name: 'looks', members: ['dsh-loop', 'whale-skin'] })
     })
-    // Once the group holds a theme, the Add theme button disables.
+    fireEvent.click(await screen.findByRole('button', { name: en.groupChangeTheme }))
+    const again = await screen.findByRole('dialog')
+    expect(within(again).getByText(en.groupThemeCurrent)).toBeTruthy()
+    fireEvent.click(within(again).getByRole('button', { name: en.groupThemeRemove }))
     await waitFor(() => {
-      expect((screen.getByRole('button', { name: en.groupAddTheme }) as HTMLButtonElement).disabled).toBe(true)
+      const set = fetchCalls.filter(c => c.path === '/dsh-market/groups' && c.body?.action === 'set-members')
+      expect(set.at(-1)?.body).toEqual({ action: 'set-members', name: 'looks', members: ['dsh-loop'] })
+    })
+  })
+
+  it('dismisses a pending group delete', async () => {
+    const state = makeFake({ 'dsh-loop': '^1.0.0' })
+    state.groups['work'] = ['dsh-loop']
+    state.groupOrder.push('work')
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    await openGroupsView()
+    const groupRow = screen.getByText('work').closest('[class*="groupRow"]') as HTMLElement
+    fireEvent.click(within(groupRow).getByRole('button', { name: en.groupMore }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: en.groupDelete }))
+    fireEvent.click(within(groupRow).getByRole('button', { name: en.cancel }))
+    expect(within(groupRow).getByRole('button', { name: en.groupMore })).toBeTruthy()
+    expect(within(groupRow).queryByRole('button', { name: en.groupConfirmDelete })).toBeNull()
+  })
+
+  it('shows the real activation state instead of Active for an inert plugin', async () => {
+    makeFake(
+      { 'dsh-loop': '^1.0.0' },
+      { 'dsh-loop': { state: 'inert', reasons: [], bundle: false, hot: false } },
+    )
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    await openGroupsView()
+    const row = screen.getByText('dsh-loop').closest('[class*="ungroupedRow"]') as HTMLElement
+    expect(within(row).getByText(en.groupStateInert)).toBeTruthy()
+    expect(within(row).queryByText(en.stateLive)).toBeNull()
+  })
+
+  it('filters the groups view from the installed search box', async () => {
+    makeFake({ 'dsh-loop': '^1.0.0', 'dsh-notify': '^1.0.0' })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    await openGroupsView()
+    fireEvent.change(screen.getByPlaceholderText(en.searchPh), { target: { value: 'notify' } })
+    await waitFor(() => {
+      expect(screen.queryByText('dsh-loop')).toBeNull()
+      expect(screen.getByText('dsh-notify')).toBeTruthy()
     })
   })
 })
