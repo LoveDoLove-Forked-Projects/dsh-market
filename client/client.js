@@ -8510,6 +8510,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					enabled
 				});
 			}, [doGroupAction]);
+			const cancelCreateGroup = (0, react.useCallback)(() => {
+				setCreatingGroup(false);
+				setNewGroupName("");
+			}, []);
 			const doCreateGroup = (0, react.useCallback)(() => {
 				const name = newGroupName.trim();
 				if (name === "") return;
@@ -8517,12 +8521,13 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					action: "create",
 					name
 				}).then((ok) => {
-					if (ok) {
-						setCreatingGroup(false);
-						setNewGroupName("");
-					}
+					if (ok) cancelCreateGroup();
 				});
-			}, [doGroupAction, newGroupName]);
+			}, [
+				cancelCreateGroup,
+				doGroupAction,
+				newGroupName
+			]);
 			const doRenameGroup = (0, react.useCallback)((name) => {
 				const newName = renamingValue.trim();
 				if (newName === "" || newName === name) {
@@ -10406,6 +10411,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 									onCommit: setQInstalled
 								}, "installed"), installedView === "groups" && (creatingGroup ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									className: Market_module_css_default.groupCreateInline,
+									onBlur: (event) => {
+										const next = event.relatedTarget;
+										if (next instanceof Node && event.currentTarget.contains(next)) return;
+										cancelCreateGroup();
+									},
 									children: [
 										/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Input, {
 											className: Market_module_css_default.inlineInput,
@@ -10414,6 +10424,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 											onChange: (e) => setNewGroupName(e.target.value),
 											onKeyDown: (e) => {
 												if (e.key === "Enter") doCreateGroup();
+												if (e.key === "Escape") cancelCreateGroup();
 											},
 											autoFocus: true
 										}),
@@ -10426,10 +10437,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 										/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 											variant: "ghost",
 											size: "sm",
-											onClick: () => {
-												setCreatingGroup(false);
-												setNewGroupName("");
-											},
+											onClick: cancelCreateGroup,
 											children: t("cancel")
 										})
 									]

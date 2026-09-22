@@ -2340,6 +2340,13 @@ describe('#60 groups view', () => {
     await openGroupsView()
     expect(await screen.findByText(en.noGroups)).toBeTruthy()
 
+    // Leaving the inline editor restores the New group button.
+    fireEvent.click(screen.getByRole('button', { name: en.groupNew }))
+    fireEvent.change(screen.getByPlaceholderText(en.groupNamePh), { target: { value: 'draft' } })
+    fireEvent.focusOut(screen.getByPlaceholderText(en.groupNamePh))
+    expect(screen.getByRole('button', { name: en.groupNew })).toBeTruthy()
+    expect(screen.queryByPlaceholderText(en.groupNamePh)).toBeNull()
+
     // Create.
     fireEvent.click(screen.getByRole('button', { name: en.groupNew }))
     fireEvent.change(screen.getByPlaceholderText(en.groupNamePh), { target: { value: 'work' } })

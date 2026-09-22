@@ -3123,16 +3123,18 @@ export function MarketSection(props: MarketSectionProps) {
     return doGroupAction({ action: 'toggle', name, enabled })
   }, [doGroupAction])
 
+  const cancelCreateGroup = useCallback(() => {
+    setCreatingGroup(false)
+    setNewGroupName('')
+  }, [])
+
   const doCreateGroup = useCallback(() => {
     const name = newGroupName.trim()
     if (name === '') return
     void doGroupAction({ action: 'create', name }).then(ok => {
-      if (ok) {
-        setCreatingGroup(false)
-        setNewGroupName('')
-      }
+      if (ok) cancelCreateGroup()
     })
-  }, [doGroupAction, newGroupName])
+  }, [cancelCreateGroup, doGroupAction, newGroupName])
 
   const doRenameGroup = useCallback((name: string) => {
     const newName = renamingValue.trim()
@@ -4717,10 +4719,17 @@ export function MarketSection(props: MarketSectionProps) {
                     {installedView === 'groups' && (
                       creatingGroup
                         ? (
-                            <div className={css.groupCreateInline}>
-                              <Input className={css.inlineInput} placeholder={t('groupNamePh')} value={newGroupName} onChange={e => setNewGroupName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doCreateGroup() }} autoFocus />
+                            <div
+                              className={css.groupCreateInline}
+                              onBlur={event => {
+                                const next = event.relatedTarget
+                                if (next instanceof Node && event.currentTarget.contains(next)) return
+                                cancelCreateGroup()
+                              }}
+                            >
+                              <Input className={css.inlineInput} placeholder={t('groupNamePh')} value={newGroupName} onChange={e => setNewGroupName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doCreateGroup(); if (e.key === 'Escape') cancelCreateGroup() }} autoFocus />
                               <Button variant="primary" size="sm" onClick={doCreateGroup}>{t('groupCreate')}</Button>
-                              <Button variant="ghost" size="sm" onClick={() => { setCreatingGroup(false); setNewGroupName('') }}>{t('cancel')}</Button>
+                              <Button variant="ghost" size="sm" onClick={cancelCreateGroup}>{t('cancel')}</Button>
                             </div>
                           )
                         : <Button variant="outline" size="sm" onClick={() => setCreatingGroup(true)}>{t('groupNew')}</Button>
