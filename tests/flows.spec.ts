@@ -4443,6 +4443,28 @@ describe('build-script approval flow (#6)', () => {
     expect(yaml).toContain(`plug-gitea@git+https://gitea.example.com/me/plug.git#${sha}: true`)
   })
 
+  it('writes both keys for a self-hosted remote spelled without .git (#665 review)', async () => {
+    // The key was derived correctly and then dropped by the allowlist, which
+    // required `.git` — the same silent hole #665 closed, one spelling over.
+    const sha = 'c1d2e3f405162738495a6b7c8d9e0f1122334455'
+    mkdirSync(join(profileDir('web'), 'node_modules', 'plug-nogit'), { recursive: true })
+    writeFileSync(join(profileDir('web'), 'node_modules', 'plug-nogit', 'package.json'), '{"name":"plug-nogit"}')
+    const manifestPath = join(profileDir('web'), 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.dependencies = { ...manifest.dependencies, 'plug-nogit': `git+https://gitea.example.com/me/plug#${sha}` }
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+
+    const approve = await bed.dispatch('POST', '/dsh-market/approve-builds', { packages: ['plug-nogit'] })
+
+    expect(approve.status).toBe(200)
+    const yaml = readFileSync(join(profileDir('web'), 'pnpm-workspace.yaml'), 'utf8')
+    expect(yaml).toContain('plug-nogit@git+https://gitea.example.com/me/plug: true')
+    expect(yaml).toContain(`plug-nogit@git+https://gitea.example.com/me/plug#${sha}: true`)
+    // Not "repaired" into a spelling pnpm would not match.
+    expect(yaml).not.toContain('plug-nogit@git+https://gitea.example.com/me/plug.git')
+  })
+
   it('uses a commit-pinned github spec for old-pnpm build approval without re-resolving HEAD (#385)', async () => {
     const sha = 'b0e6c57ebeeb4796017864f5cd5c66e6ba0899ec'
     mkdirSync(join(profileDir('web'), 'node_modules', 'plug-pinned'), { recursive: true })
