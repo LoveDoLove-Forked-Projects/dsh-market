@@ -4191,13 +4191,14 @@ sendJson(response, 200, { updates })
           // pnpm only matches a git-hosted dep's allowBuilds entry under its
           // stable `name@git+https://…` key (#68/#69) — a bare name entry is
           // ignored (verified against pnpm 11.21). Derive that key wherever
-          // the github source is known: from the profile spec for installed
-          // deps, from the curated registry for pending ones. The bare name
-          // is kept alongside — it authorizes the npm-sourced case.
+          // the git source is known — any host since #637: from the profile
+          // spec for installed deps, from the curated registry for pending
+          // ones. The bare name is kept alongside — it authorizes the
+          // npm-sourced case.
           const specs = readInstalled(config.profile, activeProfileDir)
           const packages: string[] = []
           /**
-           * Both key forms for one github source (#285).
+           * Both key forms for one git source (#285 for GitHub, #637 for the rest).
            *
            * pnpm 11.21+ matches the stable `git+https://…` key; 11.8.0 — what
            * DSH Desktop bundles — matches only a commit-pinned codeload URL,
