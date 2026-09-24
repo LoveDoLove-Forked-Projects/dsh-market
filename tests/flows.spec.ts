@@ -611,6 +611,7 @@ const REGISTRY = {
     { name: 'dsh-blue-whale', owner: 'o', url: 'https://github.com/o/blue-whale', category: 'tool', npm: null, description: {}, install: '', added: '' },
     { name: 'dsh-patchy', owner: 'o', url: 'https://github.com/o/dsh-patchy', category: 'tool', npm: null, description: {}, install: '', added: '' },
     { name: 'dsh-crashy', owner: 'o', url: 'https://github.com/o/dsh-crashy', category: 'tool', npm: null, description: {}, install: '', added: '' },
+    { name: 'dsh-tweaker', owner: 'o', url: 'https://github.com/o/dsh-tweaker', category: 'tool', npm: null, description: {}, install: '', added: '' },
     // Carries a prebuilt Release archive (#250): its install target is a
     // URL, not an npm name and not a github: shortcut.
     { name: 'dsh-prebuilt', owner: 'o', url: 'https://github.com/o/dsh-prebuilt', category: 'tool', npm: null, tarball: 'https://github.com/o/dsh-prebuilt/releases/download/v1.0.0/dsh-prebuilt.tgz', description: {}, install: '', added: '' },
@@ -5288,6 +5289,11 @@ describe('generic enable/disable toggle (#60)', () => {
     const userPatch = join(profileDir('web'), 'cordis.patch.yml')
     expect(readFileSync(userPatch, 'utf8')).toContain('- id: dsh-patchy\n  disabled: true\n')
     expect(off.json.patchWrite.ok).toBe(true)
+    // BOTH layers, or the official plugins page reads a stale package switch
+    // while the market's own row layer says off (#696 B).
+    const manifestAfterOff = JSON.parse(readFileSync(join(profileDir('web'), 'package.json'), 'utf8'))
+    expect(manifestAfterOff.dsh?.profile?.bundles ?? []).not.toContain('dsh-patchy')
+    expect(off.json.bundleSwitch.ok).toBe(true)
     // Disabled plugins read as disabled, never "restart to apply".
     expect(off.json.activation['dsh-patchy'].state).toBe('disabled')
 
@@ -5299,11 +5305,135 @@ describe('generic enable/disable toggle (#60)', () => {
     const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-patchy', enabled: true })
     expect(on.status).toBe(200)
     expect(readFileSync(userPatch, 'utf8')).not.toContain('dsh-patchy')
+    // …and back into the stack, so the package switch reads on again.
+    expect(JSON.parse(readFileSync(join(profileDir('web'), 'package.json'), 'utf8')).dsh.profile.bundles).toContain('dsh-patchy')
     expect(on.json.activation['dsh-patchy'].state).toBe('live')
     // The live fiber followed the switch — no restart needed.
     expect(on.json.restart).toBe(false)
     // Bundle-only plugin (no dsh.client) — no page refresh needed either.
     expect(on.json.refresh).toBe(false)
+  })
+
+  it('withdraws both layers when an enable cannot write one of its patch rows (#696)', async () => {
+    // A bundle patch can insert a row id the patch layer refuses to write
+    // (`/` is outside ROW_ID_RE). The enable then has to fail as a WHOLE: the
+    // stack entry it just added is withdrawn and the row it managed to flip
+    // first is put back, because leaving either behind recreates the
+    // disagreement this route exists to end — the official package switch
+    // reading on while the row layer says off.
+    const { userPatch } = await installPatchy()
+    // Two insert rows: the first is writable, the second is what the patch
+    // layer refuses — so the rollback has something to undo, which a
+    // single-row fixture would never exercise.
+    const patchFile = join(profileDir('web'), 'node_modules', 'dsh-patchy', 'cordis.patch.yml')
+    writeFileSync(patchFile, [
+      '- insert:',
+      '    - id: dsh-patchy',
+      "      name: 'dsh-patchy'",
+      '    - id: dsh-patchy/panel',
+      "      name: 'dsh-patchy/panel'",
+      '',
+    ].join('\n'))
+    const manifestPath = join(profileDir('web'), 'package.json')
+    const bundlesNow = (): string[] => JSON.parse(readFileSync(manifestPath, 'utf8')).dsh?.profile?.bundles ?? []
+
+    // Turn it off first, so the enable below has a real stack entry to add.
+    const off = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-patchy', enabled: false })
+    expect(off.status).toBe(200)
+    expect(bundlesNow()).not.toContain('dsh-patchy')
+    expect(readFileSync(userPatch, 'utf8')).toContain('- id: dsh-patchy\n  disabled: true\n')
+
+    const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-patchy', enabled: true })
+    expect(on.status).toBe(502)
+    expect(on.json.ok).toBe(false)
+    // The stack entry the enable added is gone again…
+    expect(bundlesNow()).not.toContain('dsh-patchy')
+    // …the row it flipped first is disabled again, and no force-enable block
+    // is left behind for the row it could not reach…
+    expect(readFileSync(userPatch, 'utf8')).toContain('- id: dsh-patchy\n  disabled: true\n')
+    expect(readFileSync(userPatch, 'utf8')).not.toContain('disabled: false')
+    // …and the plugin is still the market's to describe as off (#575).
+    expect(on.json.activation['dsh-patchy'].state).toBe('disabled')
+  })
+
+  it('leaves a bundle that only CONFIGURES a neighbour in the stack (#147, fixture-cross)', async () => {
+    // The e2e fixture-cross shape: this bundle's patch inserts its own row and
+    // also carries a config row for a plugin it does NOT own. Removing it from
+    // dsh.profile.bundles to make the official page's switch agree would take
+    // that neighbour's configuration away with it, which is what #147 and the
+    // fixture-cross spec exist to prevent — so the market turns the plugin off
+    // through the row layer and leaves the stack alone.
+    fake.repos['github:o/dsh-tweaker'] = {
+      name: 'dsh-tweaker',
+      manifest: { dsh: { bundle: { patch: './cordis.patch.yml' } }, main: 'lib/index.js' },
+      artifacts: ['lib/index.js', 'cordis.patch.yml'],
+    }
+    const installed = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-tweaker' })
+    expect(installed.status, JSON.stringify(installed.json)).toBe(200)
+    hot.mounts = []
+    writeFileSync(join(profileDir('web'), 'node_modules', 'dsh-tweaker', 'cordis.patch.yml'), [
+      '- insert:',
+      '    - id: dsh-tweaker',
+      "      name: 'dsh-tweaker'",
+      '- id: dsh-neighbour',
+      '  config:',
+      '    tweakedBy: dsh-tweaker',
+      '',
+    ].join('\n'))
+    // The stack state a real install leaves behind (the harness's fake install
+    // writes dependencies, not the bundle stack).
+    const manifestPath = join(profileDir('web'), 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.dsh = { ...(manifest.dsh ?? {}), profile: { ...(manifest.dsh?.profile ?? {}), bundles: [...(manifest.dsh?.profile?.bundles ?? []), 'dsh-tweaker'] } }
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+
+    const entry: Testbed['loaderEntries'][number] = {
+      options: { id: 'dsh-tweaker', name: 'dsh-tweaker', disabled: null as boolean | null } as never,
+      fiber: {},
+      update: vi.fn(async (options: { disabled: boolean | null }) => {
+        entry.options.disabled = options.disabled
+        entry.fiber = options.disabled === true ? undefined : {}
+      }),
+    }
+    bed.loaderEntries.push(entry)
+
+    const off = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-tweaker', enabled: false })
+    expect(off.status).toBe(200)
+    // Off, through the row layer…
+    expect(readFileSync(join(profileDir('web'), 'cordis.patch.yml'), 'utf8')).toContain('- id: dsh-tweaker\n  disabled: true\n')
+    // …and still composed, because its patch speaks for dsh-neighbour too.
+    const after = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    expect(after.dsh?.profile?.bundles ?? []).toContain('dsh-tweaker')
+  })
+
+  it('takes back a force-enable block a failed enable added, instead of leaving it (#696)', async () => {
+    // The other half of the row rollback. When the row layer held no flag for
+    // the row, enabling it appends `disabled: false` — a FORCE-enable, which
+    // outranks the lower layers that were holding it down. A failed enable has
+    // to take that block away again: leaving it would keep the plugin
+    // force-enabled in the user's own patch layer, i.e. on, in the layer the
+    // market just decided it is off in.
+    const { userPatch } = await installPatchy()
+    const patchFile = join(profileDir('web'), 'node_modules', 'dsh-patchy', 'cordis.patch.yml')
+    writeFileSync(patchFile, [
+      '- insert:',
+      '    - id: dsh-patchy',
+      "      name: 'dsh-patchy'",
+      '    - id: dsh-patchy/panel',
+      "      name: 'dsh-patchy/panel'",
+      '',
+    ].join('\n'))
+    // No flag for the row at all, as if the user had cleared it by hand (a
+    // fresh profile has no user patch layer file yet).
+    const patchText = (): string => { try { return readFileSync(userPatch, 'utf8') } catch { return '' } }
+    expect(patchText()).not.toContain('dsh-patchy')
+
+    const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-patchy', enabled: true })
+    expect(on.json.ok).toBe(false)
+    // The force-enable block the enable added is gone, and with it every
+    // trace of this call in the row layer.
+    expect(patchText()).not.toContain('disabled: false')
+    expect(patchText()).not.toContain('dsh-patchy')
   })
 
   it('reports restart when the disable leaves the live fiber up', async () => {

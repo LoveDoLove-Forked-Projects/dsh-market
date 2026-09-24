@@ -56,7 +56,7 @@ import { detectedDebugger, detectedSupervisor, restartAllowed, scheduleRestart, 
 import type { RecoveryPlugin } from './recovery.ts'
 import { activationAfterReplace, brokenClientBundles, checkClientBundle, hasHostHalf, newlyBrokenBundles, verifyActivation } from './verify.ts'
 import {
-  carrierDisableIds, disableRow, enableRow, findUserPatchPath, isProtectedModule, packagePatchFlags,
+  carrierDisableIds, disableRow, enableRow, findUserPatchPath, foreignRowIds, isProtectedModule, packagePatchFlags,
   readUserPatchState, removeRowBlocks, rowIdsForPackage, userPatchPackageReferences,
 } from './patch.ts'
 import {
@@ -2574,26 +2574,44 @@ export function mountMarketRoutes(
           // disabled) is NOT dropped: #147 requires disabling it to leave the
           // neighbour live, and the e2e fixture-cross re-enable breaks otherwise.
           const disablesOthers = carrierDisableIds(activeProfileDir, name)
-          // Turned off by DSH's own plugin page, which removes a package from
-          // dsh.profile.bundles (#696): enabling it here has to put it back,
-          // or the patch rows flip, the switch reads on, and nothing composes
-          // it on the next boot. Unlike a carrier this does NOT force a
-          // restart: the enable below still brings it up in this process, and
-          // whether a restart is needed is whether it is live afterwards.
-          const reBundle = enabled && disablesOthers.length === 0 && !INBOX_BUNDLES.has(name)
-            && declaresBundle(activeProfileDir, name) && !readProfileBundles(activeProfileDir).includes(name)
+          const foreignRows = foreignRowIds(activeProfileDir, name)
           const isCarrier = disablesOthers.length > 0
+          // Both layers, or neither (#696 B). `dsh.profile.bundles` is the
+          // package-level declaration the official plugins page's switch reads
+          // and the loader composes; the patch rows above are the runtime
+          // truth the market's own inference reads. Writing one and not the
+          // other is the whole of that issue — the market said off while the
+          // official page said on, and each layer was right about itself.
+          //
+          // Two shapes stay out of it. An IN-BOX bundle is not the market's to
+          // drop from the stack (order.ts refuses to reorder them for the same
+          // reason). A bundle whose patch names rows it does NOT insert speaks
+          // for a neighbour as well, and leaving the stack would take that
+          // neighbour's configuration with it — the shape #147 and the
+          // fixture-cross e2e exist to prevent.
+          const stackToggle = !INBOX_BUNDLES.has(name) && declaresBundle(activeProfileDir, name)
+            && (isCarrier || foreignRows.length === 0)
+          // Enabling something the stack no longer carries (another manager
+          // removed it, or this route did when it was last turned off) has to
+          // put it back, or the rows flip, the switch reads on and nothing
+          // composes it on the next boot. Unlike a carrier this does NOT force
+          // a restart: the enable below still brings it up in this process.
+          const reBundle = enabled && !isCarrier && !readProfileBundles(activeProfileDir).includes(name)
+          let stackChanged = false
           let bundleSwitch: { ok: boolean; reason: string | null } = { ok: true, reason: null }
-          if (isCarrier || reBundle) {
+          if (stackToggle) {
             try {
-              if (enabled) addProfileBundle(activeProfileDir, name)
-              else removeProfileBundle(activeProfileDir, name)
-              logEvent('info', 'toggle', reBundle
-                ? `${name}: re-added to dsh.profile.bundles, which another manager had removed it from (#696)`
-                : `${name}: disable-carrier ${enabled ? 're-added to' : 'removed from'} dsh.profile.bundles (disables: ${disablesOthers.join(', ')})`)
+              stackChanged = enabled
+                ? addProfileBundle(activeProfileDir, name)
+                : removeProfileBundle(activeProfileDir, name)
+              logEvent('info', 'toggle', isCarrier
+                ? `${name}: disable-carrier ${enabled ? 're-added to' : 'removed from'} dsh.profile.bundles (disables: ${disablesOthers.join(', ')})`
+                : reBundle
+                  ? `${name}: re-added to dsh.profile.bundles, which nothing was composing (#696)`
+                  : `${name}: dsh.profile.bundles ${enabled ? 're-added' : 'removed'} so the official page's package switch agrees (#696)`)
             } catch (error) {
               bundleSwitch = { ok: false, reason: error instanceof Error ? error.message : String(error) }
-              logEvent('warn', 'toggle', `${name}: carrier bundle switch failed — ${bundleSwitch.reason}`)
+              logEvent('warn', 'toggle', `${name}: dsh.profile.bundles switch failed — ${bundleSwitch.reason}`)
             }
           }
           let patchWrite: { ok: boolean; reason: string | null } | null = null
@@ -2607,16 +2625,65 @@ export function mountMarketRoutes(
           // unmount leaves the plugin live in-session, and the user asked
           // for it OFF — the durable disable is then the contract, not an
           // error.
-          const patchGate = ok || !enabled
+          // An enable that could not move the package back into the stack has
+          // nothing to say in the row layer either: flipping the rows alone
+          // would leave the two layers disagreeing, which is what this route
+          // now exists not to do. The disable direction still writes: the user
+          // asked for off, and the row layer is one of the places that holds
+          // it off.
+          const patchGate = (ok || !enabled) && (enabled ? bundleSwitch.ok : true)
+          // What the row layer said before this call, so a rollback can put
+          // each row back the way it was rather than the other way round.
+          const prePatch = patchGate ? readUserPatchState(userPatchPath) : null
           if (patchRows.length > 0 && patchGate) {
+            const flipped: string[] = []
             for (const rowId of patchRows) {
               const result = enabled ? await enableRow(userPatchPath, rowId) : await disableRow(userPatchPath, rowId)
-              if (!result.ok && patchWrite === null) patchWrite = result
+              if (result.ok) {
+                flipped.push(rowId)
+                continue
+              }
+              patchWrite = result
+              break
             }
             if (patchWrite === null) {
               logEvent('info', 'toggle', `${name}: patch layer ${enabled ? 'enabled' : 'disabled'} rows ${patchRows.join(', ')}`)
             } else {
               logEvent('warn', 'toggle', `${name}: patch layer write refused — ${patchWrite.reason}`)
+              // The two layers move together or neither does (#696): an enable
+              // that wrote some of its rows and then met a refusal goes all
+              // the way back — every row it flipped, then the stack. The
+              // disable direction keeps what it got, because a row the patch
+              // layer refuses to flip does not make the plugin live again.
+              if (enabled) {
+                for (const rowId of flipped) {
+                  // A row that was disabled gets its block back; a row that was
+                  // not loses the block this enable added. Leaving a
+                  // `disabled: false` behind would force-enable it in the
+                  // user's own patch layer — the same disagreement this route
+                  // exists to end, one row smaller.
+                  if (prePatch !== null && prePatch.disables.includes(rowId)) {
+                    const back = await disableRow(userPatchPath, rowId)
+                    if (!back.ok) logEvent('warn', 'toggle', `${name}: patch row ${rowId} could not be put back — ${back.reason}`)
+                  } else {
+                    removeRowBlocks(userPatchPath, [rowId])
+                  }
+                }
+                if (stackChanged) {
+                  try {
+                    removeProfileBundle(activeProfileDir, name)
+                    logEvent('info', 'toggle', `${name}: dsh.profile.bundles entry withdrawn — the enable did not happen`)
+                  } catch (error) {
+                    bundleSwitch = { ok: false, reason: error instanceof Error ? error.message : String(error) }
+                    logEvent('warn', 'toggle', `${name}: dsh.profile.bundles rollback failed — ${bundleSwitch.reason}`)
+                  }
+                }
+                // #575: a failed enable leaves the plugin as it was, and the
+                // reply has to say so — otherwise the switch shows a state the
+                // rollback just undid.
+                ok = false
+                reason ??= patchWrite.reason ?? undefined
+              }
             }
           }
           logEvent(ok ? 'info' : 'error', 'toggle', `${name}: ${enabled ? 'on' : 'off'} ok=${String(ok)}`)

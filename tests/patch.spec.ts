@@ -17,7 +17,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  carrierDisableIds, disableRow, enableRow, findUserPatchPath, isProtectedModule, packagePatchFlags,
+  carrierDisableIds,
+  foreignRowIds, disableRow, enableRow, findUserPatchPath, isProtectedModule, packagePatchFlags,
   readUserPatchState, removeRowBlocks, rowIdsForPackage, userPatchPackageReferences, type PatchHost,
 } from '../src/patch.ts'
 
@@ -703,6 +704,103 @@ describe('carrierDisableIds', () => {
     const dir = patchDir()
     try {
       expect(carrierDisableIds(dir, 'not-installed')).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('foreignRowIds', () => {
+  function installedBundle(dir: string, name: string, patch: string, declared = true): void {
+    mkdirSync(join(dir, 'node_modules', name), { recursive: true })
+    writeFileSync(join(dir, 'node_modules', name, 'cordis.patch.yml'), patch)
+    if (declared) {
+      writeFileSync(join(dir, 'node_modules', name, 'package.json'),
+        JSON.stringify({ name, dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+    }
+  }
+
+  it('is empty for a bundle whose patch speaks only for itself', () => {
+    const dir = patchDir()
+    try {
+      // The ordinary shape, and the one #696 B is about: disabling this bundle
+      // is disabling it, so the market may take it out of dsh.profile.bundles.
+      installedBundle(dir, 'dsh-loop', [
+        '- insert:',
+        '    - id: loop-main',
+        "      name: 'dsh-loop'",
+        '    - id: loop-panel',
+        "      name: 'dsh-loop/panel'",
+        '',
+      ].join('\n'))
+      expect(foreignRowIds(dir, 'dsh-loop')).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('names a neighbour the bundle only CONFIGURES (fixture-cross, #147)', () => {
+    const dir = patchDir()
+    try {
+      installedBundle(dir, 'dshm-e2e-fixture-cross', [
+        '- insert:',
+        '    - id: dshm-fixture-cross',
+        "      name: 'dshm-e2e-fixture-cross'",
+        '- id: dshm-fixture-b',
+        '  config:',
+        '    tweakedByCross: true',
+        '',
+      ].join('\n'))
+      expect(foreignRowIds(dir, 'dshm-e2e-fixture-cross')).toEqual(['dshm-fixture-b'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('names both the plugins a carrier disables and the ones it reconfigures', () => {
+    const dir = patchDir()
+    try {
+      // dsh-postgres-backends shape: one foreign disable and one foreign config.
+      // carrierDisableIds reports the first alone (it is what bricks a boot);
+      // this reports both, because leaving the stack takes both away.
+      installedBundle(dir, 'dsh-postgres-backends', [
+        '- id: session-persistence-jsonl',
+        '  disabled: true',
+        '- insert:',
+        '    - id: session-persistence-postgres',
+        "      name: 'dsh-postgres-backends'",
+        '- id: storage-domain',
+        '  config:',
+        '    backend: postgres',
+        '',
+      ].join('\n'))
+      expect(foreignRowIds(dir, 'dsh-postgres-backends').sort()).toEqual(['session-persistence-jsonl', 'storage-domain'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads the conventional patch even when the manifest declares none', () => {
+    const dir = patchDir()
+    try {
+      installedBundle(dir, 'dsh-tweaker', [
+        '- insert:',
+        '    - id: tweaker-main',
+        "      name: 'dsh-tweaker'",
+        '- id: neighbour-row',
+        '  disabled: true',
+        '',
+      ].join('\n'), false)
+      expect(foreignRowIds(dir, 'dsh-tweaker')).toEqual(['neighbour-row'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('is empty for a package that is not installed', () => {
+    const dir = patchDir()
+    try {
+      expect(foreignRowIds(dir, 'not-installed')).toEqual([])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
