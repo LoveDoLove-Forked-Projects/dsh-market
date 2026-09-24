@@ -35,14 +35,20 @@ import { resolveDshHome } from './home-paths.ts'
 import { INBOX_BUNDLES, readBundleRules, suggestOrder, validateOrder } from './order.ts'
 
 // Electron's app.asar packages can be loadable by the host while invisible to
-// filesystem probes made from a profile plugin. Keep this fallback limited to
-// packages confirmed to ship with the official Desktop app, and only use it
-// when the install anchor is the packaged app.
-const DESKTOP_HOST_BUNDLES = new Set(['@deepseek-ai/dsh-experimental-agent-team-profile'])
-const DESKTOP_HOST_LOADERS = new Set(['@deepseek-ai/dsh-mcp-client'])
-
+// filesystem probes made from a profile plugin. This is a property of the
+// LAYOUT, not of any particular package: inside an archive every probe
+// answers "absent" for every name, so the fallback keys on the layout, on
+// whether the name is DeepSeek's (`@deepseek-ai/` — only they publish the
+// host), and on nothing else.
+//
+// It used to be two fixed name lists — `dsh-experimental-agent-team-profile`
+// as a bundle, `dsh-mcp-client` as a loader — and every name a Desktop build
+// shipped that was not on them reproduced the same false "will fail to boot"
+// (#676: two reporters, `dsh-experimental-agent-team-profile` AND
+// `dsh-experimental-agent-team-web-profile`). A list of which bundles a host
+// ships cannot be maintained from inside a market that cannot see the host.
 function isPackagedDesktopInstall(dshInstallDir: string | null): boolean {
-  return dshInstallDir !== null && /[/\\]app\.asar[/\\]dsh$/iu.test(dshInstallDir)
+  return dshInstallDir !== null && /[/\\]app\.asar[/\\]/iu.test(dshInstallDir)
 }
 
 export { findDshInstallDir } from './dsh-install.ts'
@@ -901,8 +907,9 @@ export function buildBundleLayers(
   dshInstallDir: string | null,
 ): { bundles: BundleLayer[]; layers: LayerInput[] } {
   const bundles: BundleLayer[] = bundleNames.map((name) => {
+    const officialScope = name.startsWith('@deepseek-ai/')
     const hostProvided = INBOX_BUNDLES.has(name)
-      || (isPackagedDesktopInstall(dshInstallDir) && DESKTOP_HOST_BUNDLES.has(name))
+      || (isPackagedDesktopInstall(dshInstallDir) && officialScope)
     // The real loader gives the DSH installation first refusal for in-box
     // bundles. Desktop keeps that installation private from plugins, so a
     // DIRECT profile-local copy with the same official name is only a stale
@@ -948,18 +955,23 @@ export function buildBundleLayers(
       // --dump-config` on the same profile exited 0. Unknown has to read as
       // unknown; the profile's own bundles are still judged normally.
       //
-      // The same holds for any official bundle while the installation itself
-      // cannot be located (#676): a desktop build ships more in-box bundles
-      // than the three named in INBOX_BUNDLES —
-      // `@deepseek-ai/dsh-experimental-agent-team-profile` among them — and a
-      // fixed list, or an install-path shape, cannot know which. Two
-      // reporters saw that bundle called "not installed — will fail to boot"
-      // while its three entries were active in the running host. Only
-      // DeepSeek publishes under `@deepseek-ai/`, so while the installation
-      // is out of sight such a bundle is unknown, not missing. When the
-      // installation IS located and the bundle is in neither it nor the
-      // profile, the fatal verdict below still applies.
-      if (hostProvided || (dshInstallDir === null && name.startsWith('@deepseek-ai/'))) {
+      // The same holds for an official bundle (#676). Two independent reasons
+      // one can be absent from every probe and still be supplied by the
+      // running host:
+      //
+      //   - the installation is out of sight entirely — `dshHostInfo` found
+      //     no anchor at all, which is what a packaged Desktop looks like
+      //     from in here (#553, and the reporter who could not produce a
+      //     `dsh --dump-config` because there is no `dsh` on PATH at all);
+      //   - we have an anchor but it is an ARCHIVE, where a filesystem probe
+      //     answers "absent" for every name, including the host's own.
+      //
+      // `hostProvided` is the second case; the first is the check below. Both
+      // are gaps in what this process can see, not defects in the profile, so
+      // both read as unknown. Community bundles are untouched by this: they
+      // resolve through the profile's own node_modules ancestry, which this
+      // process CAN probe, so a missing one stays fatal.
+      if (hostProvided || (officialScope && dshInstallDir === null)) {
         layer.error = null
         layer.unresolvedInbox = true
         return layer
@@ -1174,7 +1186,13 @@ export function analyzeProfile(profileDirectory: string, options: CheckOptions =
     // the writable profile. The loader can resolve them from this anchor.
     if (dshInstall !== null && core.has(packageName)
       && resolvePackageDir(join(dshInstall, 'package.json'), packageName) !== null) continue
-    if (isPackagedDesktopInstall(dshInstall) && DESKTOP_HOST_LOADERS.has(packageName)) {
+    // Same rule as the bundle stack above: inside an archive the probe is
+    // blind for EVERY `@deepseek-ai/` name, so the verdict depends on the
+    // name being DeepSeek's and not on whether it appears on a list of the
+    // ones we happen to have seen. `dsh-mcp-client` was that list's only
+    // entry, and the next host-shipped loader would have been a fresh fatal
+    // error (#676).
+    if (isPackagedDesktopInstall(dshInstall) && packageName.startsWith('@deepseek-ai/')) {
       warnings.push(`${row.layer}: bundled Desktop loader ${packageName} could not be independently resolved from app.asar`)
       continue
     }

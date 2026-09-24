@@ -428,6 +428,28 @@ describe('user patch package resolution (#205)', () => {
     expect(resolutionErrors(report.summary.errors)).toEqual([])
   })
 
+  it('accepts an install-level package a user patch can reach, without a list of names (#676)', () => {
+    // qikairo7's counterexample, as a fixture: `@deepseek-ai/dsh-agent-preset`
+    // exists ONLY in the installation, and its cordis.patch.yml row was
+    // proven to resolve (`dsh --profile web --dump-config` EXIT=0, entries in
+    // the tree). It is not one of the curated core names in the seed list, so
+    // the only thing that can recognise it is the installation's own
+    // node_modules inventory — which is the point: that inventory is the
+    // authority, not a list maintained here.
+    const dir = pdir()
+    const dshInstall = join(tmp, 'dsh-install')
+    writeProfile(dir, { name: 'web-profile', dependencies: {} })
+    writeProfile(dshInstall, { name: '@deepseek-ai/dsh' })
+    writeLoadablePackage(dshInstall, '@deepseek-ai/dsh-agent-preset')
+    writeFileSync(join(dir, 'cordis.patch.yml'), dump([
+      { insert: [{ id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset' }] },
+    ]))
+
+    const report = analyzeProfile(dir, { dshInstallDir: dshInstall, homeDir: join(tmp, 'empty-home') })
+
+    expect(resolutionErrors(report.summary.errors)).toEqual([])
+  })
+
   it('does not call confirmed app.asar host packages missing profile dependencies', () => {
     const dir = pdir()
     const dshInstall = join(tmp, 'resources', 'app.asar', 'dsh')
@@ -469,6 +491,70 @@ describe('user patch package resolution (#205)', () => {
     const report = analyzeProfile(dir, { dshInstallDir: dshInstall, homeDir: join(tmp, 'empty-home') })
     expect(report.summary.errors.some(error => error.includes('dsh-experimental-agent-team-profile'))).toBe(true)
     expect(report.summary.errors.some(error => error.includes('dsh-mcp-client'))).toBe(true)
+  })
+
+  // The two fixed lists that used to carry this rule — one bundle name, one
+  // loader name — are what made #676 a report that kept coming back: each new
+  // name a Desktop build shipped walked past them into a fatal verdict while
+  // the entries were live in the running host. The rule is the LAYOUT (an
+  // archive nothing can be probed inside) plus the SCOPE (only DeepSeek
+  // publishes the host), and these two tests are the names those lists did
+  // not have.
+  it('reads an unseen official Desktop bundle as unknown rather than missing', () => {
+    const dir = pdir()
+    const dshInstall = join(tmp, 'resources', 'app.asar', 'dsh')
+    writeProfile(dir, {
+      name: 'desktop-profile',
+      dependencies: {},
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-experimental-agent-team-web-profile'] } },
+    })
+    writeProfile(dshInstall, { name: '@deepseek-ai/dsh' })
+
+    const report = analyzeProfile(dir, { dshInstallDir: dshInstall, homeDir: join(tmp, 'empty-home') })
+
+    expect(report.bundles[0]).toMatchObject({
+      kind: 'official',
+      error: null,
+      unresolvedInbox: true,
+    })
+    expect(report.summary.errors).toEqual([])
+  })
+
+  it('reads an unseen official Desktop loader as a warning rather than a boot failure', () => {
+    const dir = pdir()
+    const dshInstall = join(tmp, 'resources', 'app.asar', 'dsh')
+    writeProfile(dir, { name: 'desktop-profile', dependencies: {} })
+    writeProfile(dshInstall, { name: '@deepseek-ai/dsh' })
+    writeFileSync(join(dir, 'cordis.patch.yml'), dump([
+      { insert: [{ id: 'official-skill', name: '@deepseek-ai/dsh-skill-manage' }] },
+    ]))
+
+    const report = analyzeProfile(dir, { dshInstallDir: dshInstall, homeDir: join(tmp, 'empty-home') })
+
+    expect(report.summary.errors).toEqual([])
+    expect(report.summary.warnings).toContain(
+      'user-patch: bundled Desktop loader @deepseek-ai/dsh-skill-manage could not be independently resolved from app.asar',
+    )
+  })
+
+  it('still fails a community bundle declared on a packaged Desktop', () => {
+    // The archive is blind to the host's own packages, not to the profile's:
+    // a community bundle resolves through the profile's node_modules
+    // ancestry, which this process probes normally, so a missing one is a
+    // real boot failure and must not ride along with the official names.
+    const dir = pdir()
+    const dshInstall = join(tmp, 'resources', 'app.asar', 'dsh')
+    writeProfile(dir, {
+      name: 'desktop-profile',
+      dependencies: {},
+      dsh: { profile: { bundles: ['@someone/community-bundle'] } },
+    })
+    writeProfile(dshInstall, { name: '@deepseek-ai/dsh' })
+
+    const report = analyzeProfile(dir, { dshInstallDir: dshInstall, homeDir: join(tmp, 'empty-home') })
+
+    expect(report.bundles[0]).toMatchObject({ kind: 'community', error: expect.stringContaining('not installed') })
+    expect(report.summary.errors.some(error => error.includes('community-bundle'))).toBe(true)
   })
 
   it('does not skip a broken nearer package directory for a healthy parent copy', () => {
