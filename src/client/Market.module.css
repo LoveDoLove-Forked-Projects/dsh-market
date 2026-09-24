@@ -593,6 +593,17 @@
 .irow button{white-space:nowrap;flex-shrink:0}
 .tabSearchRow{display:flex;align-items:center;gap:8px;padding:0 4px 12px}
 .tabSearch{flex:1;min-width:0}
+.searchField{position:relative;min-width:0;box-sizing:border-box}
+/* The primitives' Input applies className to its padded OUTER span, not the
+   native input, so the reserved space for the clear button belongs here and
+   the button itself is positioned against .searchField. Doubled class for
+   specificity against the sheet's other input rules, and border-box for the
+   grid case in #305: 34px of padding on a 100%-wide box is 34px more than the
+   grid cell otherwise. */
+.searchInput.searchInput{width:100%;min-width:0;box-sizing:border-box;padding-right:34px}
+.searchClear{position:absolute;right:5px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#59636e);font:inherit;font-size:20px;line-height:1;cursor:pointer}
+.searchClear:hover{background:var(--dsw-alias-bg-layer-2,#f3f4f6);color:var(--dsw-alias-label-primary,#1f2328)}
+.searchClear:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4f6ef7);outline-offset:1px}
 /* Buttons sharing the row with a description must keep one line (#26, thanks @yanshuai2002) */
 .spec{font-size:11px;color:var(--dsw-alias-label-secondary,#9ca3af);font-family:ui-monospace,Menlo,monospace;overflow-wrap:anywhere;min-width:0}
 .specTag{display:inline-flex;align-items:center;height:16px;padding:0 5px;border-radius:4px;font-size:10px;font-weight:600;white-space:nowrap;flex-shrink:0}

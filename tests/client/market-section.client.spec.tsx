@@ -11,10 +11,11 @@ import { resolve } from 'node:path'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarketSection, OwnerAvatar, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
+import { SEARCH_DELAY_MS } from '../../src/client/SearchInput.tsx'
 import {
   pluginScreenshotCandidates, resetGithubRouting, resetScreenshotsCache, setGithubRoutes,
 } from '../../src/client/market-data.ts'
-import { en } from '../../src/client/locales.ts'
+import { en, zh } from '../../src/client/locales.ts'
 
 const REGISTRY = {
   updated: '', count: 4,
@@ -3219,6 +3220,154 @@ describe('local-dev restore', () => {
       expect(retries.length).toBeGreaterThanOrEqual(2)
       expect(retries.at(-1)?.body).toMatchObject({ name: 'dsh-loop', restore: true })
     })
+  })
+})
+
+describe('search clear controls (#524)', () => {
+  /**
+   * Every tab's search box is the same component, so these go through the
+   * rendered market rather than mounting it directly: what a reader gets is a
+   * field on a page, and the bug this replaced was one of placement inside
+   * that page — a control that lived outside the component could only reset
+   * the committed query, and only if every call site remembered to render it.
+   */
+  // Referentially stable, like LOCALE_SNAPSHOT: useSyncExternalStore reads a
+  // fresh object as a change on every render and loops until React throws.
+  const THEME_SNAPSHOT = { preference: 'light', themes: [] as Array<{ id: string }> }
+  const ZH_SNAPSHOT = { active: 'zh' }
+
+  function searchTabProps() {
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web',
+        installed: { 'dsh-loop': '^1.0.0', 'dsh-notify': '^1.0.0', 'whale-skin': '^1.0.0' },
+        live: [], disabled: [], groups: {}, groupOrder: [],
+        favorites: REGISTRY.plugins.map(plugin => plugin.url),
+      },
+    })
+    return {
+      ...props(),
+      themeStore: { subscribe: () => () => {}, getSnapshot: () => THEME_SNAPSHOT },
+    }
+  }
+
+  it('clears the Discover search and brings back the filtered-out results (#524)', async () => {
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    const input = screen.getByPlaceholderText(en.searchPh)
+    fireEvent.change(input, { target: { value: 'loop' } })
+    await waitFor(() => expect(screen.queryByText('dsh-notify')).toBeNull())
+
+    fireEvent.click(screen.getByRole('button', { name: en.clearSearch }))
+
+    expect(input).toHaveProperty('value', '')
+    expect(await screen.findByText('dsh-notify')).toBeTruthy()
+    expect(screen.getByText('dsh-loop')).toBeTruthy()
+  })
+
+  it('clears a query that has not been committed yet, and cancels it', async () => {
+    // The clear control exists for the field as it LOOKS: between a keystroke
+    // and SearchInput's 250ms commit, the box holds text the parent has not
+    // heard about. Clearing there must empty the box now and must not let the
+    // pending query land afterwards — clearing and then watching the list
+    // re-filter itself would be worse than not clearing at all.
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    const input = screen.getByPlaceholderText(en.searchPh)
+    fireEvent.change(input, { target: { value: 'loop' } })
+    fireEvent.click(screen.getByRole('button', { name: en.clearSearch }))
+    expect(input).toHaveProperty('value', '')
+
+    await new Promise(resolve => setTimeout(resolve, SEARCH_DELAY_MS + 100))
+    expect(screen.getByText('dsh-notify')).toBeTruthy()
+    expect(screen.getByText('dsh-loop')).toBeTruthy()
+  })
+
+  it.each([
+    { tab: 'Discover', label: en.tabDiscover, placeholder: en.searchPh, result: 'dsh-loop', query: 'loop' },
+    { tab: 'Favorites', label: en.tabFavorites, placeholder: en.searchFavoritesPh, result: 'dsh-loop', query: 'loop' },
+    { tab: 'Themes', label: en.tabThemes, placeholder: en.searchPh, result: 'whale-skin', query: 'whale' },
+    { tab: 'Installed', label: en.tabInstalled, placeholder: en.searchPh, result: 'dsh-loop', query: 'loop' },
+  ])('$tab shows the clear control only when there is something to clear, and returns focus', async ({ label, placeholder, result, query }) => {
+    render(<MarketSection {...searchTabProps()} />)
+    await screen.findByText('dsh-loop')
+    // The Themes category pill carries the same label as the Themes tab; the tab is first.
+    fireEvent.click(screen.getAllByRole('button', { name: re(label) })[0])
+    await screen.findByText(result)
+    const input = screen.getByPlaceholderText(placeholder)
+    expect(input.tagName).toBe('INPUT')
+    // A plugin name is not prose: no red squiggles under dsh-session-manager.
+    expect(input.getAttribute('spellcheck')).toBe('false')
+    expect(screen.queryByRole('button', { name: en.clearSearch })).toBeNull()
+
+    fireEvent.change(input, { target: { value: 'zzz-no-match' } })
+    await waitFor(() => expect(screen.queryByText(result)).toBeNull())
+    const clear = screen.getByRole('button', { name: en.clearSearch })
+    // A real button, so Enter and Space activate it without extra key handling.
+    expect(clear.getAttribute('type')).toBe('button')
+    clear.focus()
+    fireEvent.click(clear)
+    expect(input).toHaveProperty('value', '')
+    expect(document.activeElement).toBe(input)
+    expect(screen.queryByRole('button', { name: en.clearSearch })).toBeNull()
+    expect(await screen.findByText(result)).toBeTruthy()
+
+    // Whitespace is a query as far as the box is concerned: it is on screen,
+    // so it can be cleared.
+    fireEvent.change(input, { target: { value: query } })
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.click(screen.getByRole('button', { name: en.clearSearch }))
+    expect(input).toHaveProperty('value', '')
+    expect(screen.queryByRole('button', { name: en.clearSearch })).toBeNull()
+  })
+
+  it('clears only the tab in view, leaving the other three queries alone', async () => {
+    render(<MarketSection {...searchTabProps()} />)
+    await screen.findByText('dsh-loop')
+    const searches = [
+      { label: en.tabDiscover, placeholder: en.searchPh, query: 'loop' },
+      { label: en.tabFavorites, placeholder: en.searchFavoritesPh, query: 'notify' },
+      { label: en.tabThemes, placeholder: en.searchPh, query: 'whale' },
+      { label: en.tabInstalled, placeholder: en.searchPh, query: 'loop' },
+    ]
+    for (const { label, placeholder, query } of searches) {
+      fireEvent.click(screen.getAllByRole('button', { name: re(label) })[0])
+      fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value: query } })
+      // Each box commits on a 250ms debounce, and a box that unmounts
+      // mid-debounce deliberately drops its pending query (SearchInput's
+      // cancel-on-unmount). Let each one settle, or this asserts that loss
+      // instead of the preservation it is about.
+      await new Promise(resolve => setTimeout(resolve, SEARCH_DELAY_MS + 50))
+    }
+    fireEvent.click(screen.getAllByRole('button', { name: re(en.tabInstalled) })[0])
+    fireEvent.click(screen.getByRole('button', { name: en.clearSearch }))
+    expect(screen.getByPlaceholderText(en.searchPh)).toHaveProperty('value', '')
+    expect(screen.queryByRole('button', { name: en.clearSearch })).toBeNull()
+
+    for (const { label, placeholder, query } of searches.slice(0, 3)) {
+      fireEvent.click(screen.getAllByRole('button', { name: re(label) })[0])
+      expect(screen.getByPlaceholderText(placeholder)).toHaveProperty('value', query)
+      expect(screen.getByRole('button', { name: en.clearSearch })).toBeTruthy()
+    }
+  })
+
+  it('names the control in the reader\'s language', async () => {
+    const marketProps = props()
+    const { rerender } = render(<MarketSection {...marketProps} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.change(screen.getByPlaceholderText(en.searchPh), { target: { value: 'loop' } })
+    expect(screen.getByRole('button', { name: en.clearSearch })).toBeTruthy()
+
+    rerender(<MarketSection {...marketProps}
+      t={key => (zh as Record<string, string>)[key] ?? key}
+      locale={{ subscribe: () => () => {}, getSnapshot: () => ZH_SNAPSHOT }}
+    />)
+    const input = screen.getByPlaceholderText(zh.searchPh)
+    expect(input).toHaveProperty('value', 'loop')
+    expect(screen.queryByRole('button', { name: en.clearSearch })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.clearSearch }))
+    expect(input).toHaveProperty('value', '')
+    expect(await screen.findByText('dsh-notify')).toBeTruthy()
   })
 })
 

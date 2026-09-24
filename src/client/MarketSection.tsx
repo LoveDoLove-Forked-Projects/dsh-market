@@ -4588,7 +4588,7 @@ export function MarketSection(props: MarketSectionProps) {
                     <div ref={setCatsSentinel} />
                     <div className={css.stickyHead}>
                     <div className={css.tabSearchRow}>
-                      <SearchInput key="discover" resetToken={discoverSearchReset} className={css.tabSearch} placeholder={t('searchPh')} value={q} onCommit={setQ} />
+                      <SearchInput key="discover" resetToken={discoverSearchReset} className={css.tabSearch} placeholder={t('searchPh')} value={q} onCommit={setQ} t={t} />
                     </div>
                     <div className={css.cats}>
                       <div className={css.catsRow}>
@@ -4692,6 +4692,7 @@ export function MarketSection(props: MarketSectionProps) {
                           placeholder={t('searchFavoritesPh')}
                           value={qFavorites}
                           onCommit={setQFavorites}
+                          t={t}
                         />
                         <div className={css.themeToolbarActions}>
                           <FilterMenu
@@ -4777,7 +4778,7 @@ export function MarketSection(props: MarketSectionProps) {
             ? (
                 <>
                   <div className={css.themeToolbar}>
-                    <SearchInput key="themes" className={css.themeSearch} placeholder={t('searchPh')} value={qThemes} onCommit={setQThemes} />
+                    <SearchInput key="themes" className={css.themeSearch} placeholder={t('searchPh')} value={qThemes} onCommit={setQThemes} t={t} />
                     <div className={css.themeToolbarActions}>
                       <FilterMenu
                         sortField={themeSortField}
@@ -4847,7 +4848,7 @@ export function MarketSection(props: MarketSectionProps) {
                     <button type="button" className={installedView === 'groups' ? `${css.viewBtn} ${css.viewOn}` : css.viewBtn} onClick={() => setInstalledView('groups')}>{t('tabGroups')}</button>
                   </div>
                   <div className={css.tabSearchRow}>
-                    <SearchInput key="installed" resetToken={installedSearchReset} className={css.tabSearch} placeholder={t('searchPh')} value={qInstalled} onCommit={setQInstalled} />
+                    <SearchInput key="installed" resetToken={installedSearchReset} className={css.tabSearch} placeholder={t('searchPh')} value={qInstalled} onCommit={setQInstalled} t={t} />
                     {installedView === 'groups' && (
                       creatingGroup
                         ? (
@@ -5507,6 +5508,7 @@ export function MarketSection(props: MarketSectionProps) {
                 value={addQuery}
                 onCommit={setAddQuery}
                 placeholder={t('groupAddSearchPh')}
+                t={t}
               />
               {candidates.length === 0
                 ? <p className={css.groupAddModalHint}>{t('groupAddEmpty')}</p>
