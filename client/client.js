@@ -457,6 +457,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			perPage: "每页",
 			marketUpdate: "更新插件市场",
 			updateAll: "全部更新",
+			heldReleaseNotice: "装好了，但不是最新的：这个 profile 的 minimumReleaseAge 把 {0} 按住了，装的是 {1}。",
+			heldReleaseAction: "装 {0}（不等）",
 			ignoreUpdateNotice: "本次不再提醒",
 			ignoreAllUpdateNotices: "本次全部忽略",
 			updateNoticeIgnored: "本次已忽略提醒",
@@ -1055,6 +1057,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			perPage: "Per page",
 			marketUpdate: "Update the plugin market",
 			updateAll: "Update all",
+			heldReleaseNotice: "Installed, but not the newest: this profile's minimumReleaseAge is holding {0} back, so {1} is what got installed.",
+			heldReleaseAction: "Install {0} anyway",
 			ignoreUpdateNotice: "Ignore for this boot",
 			ignoreAllUpdateNotices: "Ignore all for this boot",
 			updateNoticeIgnored: "Reminder ignored for this boot",
@@ -3771,6 +3775,12 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 												size: "sm",
 												onClick: () => props.onRetry?.(record),
 												children: t("opRetry")
+											}),
+											record.state === "warned" && record.heldRelease !== void 0 && props.onForceInstall !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+												variant: "outline",
+												size: "sm",
+												onClick: () => props.onForceInstall?.(record),
+												children: t("heldReleaseAction").replace("{0}", record.heldRelease.latest)
 											}),
 											isSettled(record) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 												variant: "ghost",
@@ -7951,7 +7961,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							setHotNames((names) => names.includes(plugin.name) ? names : names.concat(plugin.name));
 						} else setDoneUrls((urls) => urls.includes(plugin.url) ? urls : urls.concat(plugin.url));
 						if (body.compatibility?.code === "soft-incompatible") setCompatibilityNotice(body.compatibility);
-						setRecords((list) => patch(list, recordId, body.compatibility?.code === "soft-incompatible" ? {
+						setRecords((list) => patch(list, recordId, body.heldRelease !== void 0 ? {
+							state: "warned",
+							reason: t("heldReleaseNotice").replace("{0}", String(body.heldRelease.latest)).replace("{1}", String(body.heldRelease.installed ?? "")),
+							heldRelease: body.heldRelease
+						} : body.compatibility?.code === "soft-incompatible" ? {
 							state: "warned",
 							reason: t("compatRiskBanner")
 						} : {
@@ -9830,6 +9844,12 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 										onDismiss: (record) => setRecords((list) => drop(list, record.id)),
 										onRefresh: () => location.reload(),
 										onResolveConflict: resolveConflict,
+										onForceInstall: (record) => {
+											const plugin = record.url === void 0 ? void 0 : data?.plugins.find((p) => p.url === record.url);
+											if (plugin === void 0) return;
+											setRecords((list) => drop(list, record.id));
+											doInstall(plugin, true);
+										},
 										onApproveBuilds: (record) => {
 											const names = record.blockedBuilds ?? [];
 											if (names.length === 0) return;

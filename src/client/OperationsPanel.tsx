@@ -65,6 +65,11 @@ export interface OperationsPanelProps {
    * retry on a record that failed for that reason, so the fix sits next to
    * the sentence describing the problem. */
   onApproveBuilds?: ((record: OperationRecord) => void) | undefined
+  /** Install the release a hold kept back, over the profile's own
+   * minimumReleaseAge (#635). Offered on the record that says the hold
+   * happened, for the same reason the build approval is: the way out belongs
+   * beside the sentence describing the problem. */
+  onForceInstall?: ((record: OperationRecord) => void) | undefined
 }
 
 /**
@@ -352,6 +357,11 @@ export function OperationsPanel(props: OperationsPanelProps) {
                   )}
                   {record.state === 'failed' && (record.blockedBuilds ?? []).length === 0 && props.onRetry !== undefined && (
                     <Button variant="outline" size="sm" onClick={() => props.onRetry?.(record)}>{t('opRetry')}</Button>
+                  )}
+                  {record.state === 'warned' && record.heldRelease !== undefined && props.onForceInstall !== undefined && (
+                    <Button variant="outline" size="sm" onClick={() => props.onForceInstall?.(record)}>
+                      {t('heldReleaseAction').replace('{0}', record.heldRelease.latest)}
+                    </Button>
                   )}
                   {isSettled(record) && (
                     <Button variant="ghost" size="sm" onClick={() => props.onDismiss(record)}>{t('dismissNotice')}</Button>

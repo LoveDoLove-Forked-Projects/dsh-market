@@ -672,6 +672,43 @@ describe('MarketSection (jsdom)', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: en.confirmInstall })).toBeNull())
   })
 
+  it('offers the release a hold kept back, and installs it when asked (#635)', async () => {
+    let installs = 0
+    stubFetch({
+      '/dsh-market/install': () => {
+        installs += 1
+        return installs === 1
+          ? { ok: true, hot: false, heldRelease: { latest: '2.0.0', installed: '1.0.0', because: 'minimumReleaseAge' } }
+          : { ok: true, hot: false }
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getAllByRole('button', { name: en.install })[0])
+    fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+
+    await waitFor(() => expect(fetchCalls.filter(c => c.path === '/dsh-market/install').length).toBe(1))
+    // Open the Tasks panel: that is where a record lives once it settles.
+    fireEvent.click(await screen.findByRole('button', { name: new RegExp(en.opTitle) }))
+
+    // A success with a caveat, not a failure: the plugin IS installed, so the
+    // row keeps its ✓ and says which release the profile held back.
+    const notice = en.heldReleaseNotice.replace('{0}', '2.0.0').replace('{1}', '1.0.0')
+    await waitFor(() => {
+      const panel = document.querySelector('[class*="opPanel"]')
+      expect(panel, 'the Tasks panel did not open').toBeTruthy()
+      expect(panel!.textContent).toContain(notice)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: en.heldReleaseAction.replace('{0}', '2.0.0') }))
+    await waitFor(() => {
+      const posts = fetchCalls.filter(call => call.path === '/dsh-market/install')
+      expect(posts.length).toBe(2)
+      // The click is what carries the intent the server refuses to assume.
+      expect(posts[1]?.body).toMatchObject({ force: true })
+    })
+  })
+
   it('export log is a real button with visible feedback (#84)', async () => {
     stubFetch({ '/dsh-market/logs': 'log-lines' })
     render(<MarketSection {...props()} />)

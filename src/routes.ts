@@ -4979,6 +4979,11 @@ sendJson(response, 200, { updates })
             const lockfileBefore = captureProfileLockfile()
             const pinned = target === pinnedTarget && pinnedTarget !== plainTarget
             let result = await (pinned ? runPluginKeepingReleaseAge : runPlugin)(config.profile, ['add', target])
+            // Set when the profile's own minimumReleaseAge is what kept this
+            // install off the newest release (#635). The install SUCCEEDS —
+            // an older version is installed and works — so this travels as
+            // extra information, not as a failure.
+            let heldByAge = false
             // Two ways a pinned add can fail that a bare add would not, and
             // both go back to the bare name once, with the reason logged.
             // Any other failure keeps its own diagnosis.
@@ -4998,12 +5003,28 @@ sendJson(response, 200, { updates })
               const notOnMirror = (failure?.code === 'no-matching-version' && aboutThisPackage)
                 || (failure?.code === 'fetch-404' && (failure.pkg === plainTarget || failure.pkg === ownTarball))
               if (heldBack || notOnMirror) {
-                logEvent('warn', 'install', heldBack
-                  ? `${entry.name}: ${String(registryLatest)} is younger than this profile's minimumReleaseAge — installing the version pnpm admits instead; the update check will offer ${String(registryLatest)} once it is old enough`
-                  : `${entry.name}: the profile's registry could not resolve ${String(registryLatest)} (a mirror behind the registry that answered latest) — retrying with the bare name`)
+                // The user asked for the young release anyway. That request is
+                // the intent the fresh path otherwise refuses to assume it has
+                // (#594): the bypass is safe to use HERE because it is no
+                // longer the market's idea — it is what was clicked (#635).
+                const bypass = heldBack && force
+                logEvent('warn', 'install', bypass
+                  ? `${entry.name}: ${String(registryLatest)} is younger than this profile's minimumReleaseAge — installing it anyway, as asked, with ${RELEASE_AGE_OVERRIDE}`
+                  : heldBack
+                    ? `${entry.name}: ${String(registryLatest)} is younger than this profile's minimumReleaseAge — installing the version pnpm admits instead; the update check will offer ${String(registryLatest)} once it is old enough`
+                    : `${entry.name}: the profile's registry could not resolve ${String(registryLatest)} (a mirror behind the registry that answered latest) — retrying with the bare name`)
                 restoreProfileManifest(config.profile, manifestBefore, activeProfileDir)
-                target = plainTarget
-                result = await runPlugin(config.profile, ['add', target])
+                if (bypass) {
+                  result = await runPlugin(config.profile, ['add', RELEASE_AGE_OVERRIDE, pinnedTarget])
+                }
+                if (!bypass || result.exitCode !== 0 || result.timedOut || result.cancelled) {
+                  // Either the hold is the profile's to keep, or the bypass
+                  // was asked for and did not deliver. Both end on the bare
+                  // name, which is the version pnpm admits.
+                  if (heldBack) heldByAge = true
+                  target = plainTarget
+                  result = await runPlugin(config.profile, ['add', target])
+                }
               }
             }
             const cancelled = result.cancelled
@@ -5143,6 +5164,17 @@ sendJson(response, 200, { updates })
               cancelled: cancelled || undefined,
               busy: result.busy || undefined,
               hot,
+              // A held release is not a failure (#635): the plugin is
+              // installed and works, it is simply not the newest one, and the
+              // profile's own minimumReleaseAge is why. Named here so the row
+              // can say both things and offer the version the hold refused.
+              heldRelease: heldByAge && ok
+                ? {
+                    latest: String(registryLatest),
+                    installed: readInstalledVersion(config.profile, entry.name, activeProfileDir),
+                    because: 'minimumReleaseAge',
+                  }
+                : undefined,
               partial: cancelDiff?.partial,
               changed: cancelDiff?.changed,
               activation,

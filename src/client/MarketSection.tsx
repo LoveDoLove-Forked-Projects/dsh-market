@@ -2307,9 +2307,21 @@ export function MarketSection(props: MarketSectionProps) {
           }
           // `warned` keeps the ✓: the plugin IS installed, so calling a
           // compatibility risk a failure would misreport what happened.
-          setRecords(list => patchRecord(list, recordId, body.compatibility?.code === 'soft-incompatible'
-            ? { state: 'warned', reason: t('compatRiskBanner') }
-            : { state: 'done', needsRefresh: body.hot !== true }))
+          setRecords(list => patchRecord(list, recordId, body.heldRelease !== undefined
+            // The plugin is installed and works; the profile's own
+            // minimumReleaseAge is why it is not the newest one. A `warned`
+            // keeps the ✓ that the install earned, and the record carries the
+            // version the hold refused so the row can offer it (#635).
+            ? {
+                state: 'warned',
+                reason: t('heldReleaseNotice')
+                  .replace('{0}', String(body.heldRelease.latest))
+                  .replace('{1}', String(body.heldRelease.installed ?? '')),
+                heldRelease: body.heldRelease,
+              }
+            : body.compatibility?.code === 'soft-incompatible'
+              ? { state: 'warned', reason: t('compatRiskBanner') }
+              : { state: 'done', needsRefresh: body.hot !== true }))
           refreshInstalled()
         } else {
           if (status === 409) {
@@ -4133,6 +4145,16 @@ export function MarketSection(props: MarketSectionProps) {
             onDismiss={record => setRecords(list => drop(list, record.id))}
             onRefresh={() => location.reload()}
             onResolveConflict={resolveConflict}
+            onForceInstall={(record) => {
+              // Same road as any other install, with the one flag that says
+              // the user has seen the hold and wants the release anyway. The
+              // record is dropped first so the retry replaces it rather than
+              // sitting beside a row that already said "installed".
+              const plugin = record.url === undefined ? undefined : data?.plugins.find(p => p.url === record.url)
+              if (plugin === undefined) return
+              setRecords(list => drop(list, record.id))
+              doInstall(plugin, true)
+            }}
             onApproveBuilds={(record) => {
               const names = record.blockedBuilds ?? []
               if (names.length === 0) return

@@ -1253,6 +1253,51 @@ describe('install flow', () => {
     expect(installed.version).toBe('1.2.0')
   })
 
+  it('reports the release a hold kept back instead of letting the install look complete (#635)', async () => {
+    fake.npm['dsh-loop'] = {
+      latest: '1.3.0',
+      versions: {
+        '1.2.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+        '1.3.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+    fake.releaseHold = { mature: '1.2.0', strict: true }
+
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    // Success, because it IS installed — the plugin works, it is simply not
+    // the newest one — and the hold is named so the row can say so.
+    expect(r.status).toBe(200)
+    expect(r.json.ok).toBe(true)
+    expect(r.json.heldRelease).toEqual({ latest: '1.3.0', installed: '1.2.0', because: 'minimumReleaseAge' })
+  })
+
+  it('installs the held-back release when the user asks for it (#635)', async () => {
+    fake.npm['dsh-loop'] = {
+      latest: '1.3.0',
+      versions: {
+        '1.2.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+        '1.3.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+    fake.releaseHold = { mature: '1.2.0', strict: true }
+
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop', force: true })
+
+    expect(r.status).toBe(200)
+    expect(r.json.ok).toBe(true)
+    // The pinned attempt fails on the hold, and the retry carries the
+    // one-shot bypass — with NO fallback to the bare name. The user's click
+    // is the intent the fresh path otherwise refuses to assume it has (#594),
+    // which is what makes the bypass safe here.
+    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([
+      ['add', 'dsh-loop@1.3.0'],
+      ['add', RELEASE_AGE_OVERRIDE, 'dsh-loop@1.3.0'],
+    ])
+    expect(installedSpec('dsh-loop')).toBe('^1.3.0')
+    expect(r.json.heldRelease).toBeUndefined()
+  })
+
   it('pins a scoped package under its npm name, not the catalog display name (#594)', async () => {
     fake.npm['@changfenhuang/dsh-genui'] = { latest: '1.4.0', versions: { '1.4.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
 
