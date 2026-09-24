@@ -26,17 +26,42 @@ describe.skipIf(!dshAvailable())('host dispatches the market settings card (#516
       try { await button.waitFor({ timeout: i === 0 ? 30_000 : 1500 }); await button.click() } catch { break }
     }
     await page.getByRole('button', { name: /^(设置|Settings)$/ }).first().click()
-    await page.getByText(/^(插件|Plugins)$/).last().click()
-    await page.getByText(/^(插件配置|Plugin configuration)$/).last().click()
+
+    // Which host generation this is comes from the MARKET — the side that
+    // offered its namespace and knows what the service answered (#677).
+    // 0.1.7 derives settings from a plugin's Config schema, serves no
+    // third-party namespace, and has no plugin-configuration page for this
+    // card to be dispatched into. On that host the honest assertion is that
+    // the page is gone, not that a card appears on a page that does not
+    // exist; asserting either shape unconditionally would demand something a
+    // host cannot do, or prove nothing on the host that cannot do it.
+    const status = await (await fetch(`${scaffold.baseUrl}/dsh-market/status`)).json() as {
+      settingsNamespace?: string
+    }
+    expect(status.settingsNamespace, 'the market has booted and must have an answer').not.toBe('pending')
+    const dispatchesCards = status.settingsNamespace !== 'unsupported-by-host'
+
     const card = page.locator('button[aria-expanded]').filter({ hasText: /插件市场|Plugin Market/ })
-    await card.waitFor({ timeout: 15_000 })
-    expect(await card.count()).toBe(1)
-    await card.click()
-    await page.getByText(/^(下载区域|Download region)$/).waitFor()
-    const artifacts = process.env.DSHM_SETTINGS_ARTIFACTS
-    if (artifacts) await card.locator('..').screenshot({ path: join(artifacts, `${mode}-card.png`) })
+    if (dispatchesCards) {
+      await page.getByText(/^(插件|Plugins)$/).last().click()
+      await page.getByText(/^(插件配置|Plugin configuration)$/).last().click()
+      await card.waitFor({ timeout: 15_000 })
+      expect(await card.count()).toBe(1)
+      await card.click()
+      await page.getByText(/^(下载区域|Download region)$/).waitFor()
+      const shot = process.env.DSHM_SETTINGS_ARTIFACTS
+      if (shot) await card.locator('..').screenshot({ path: join(shot, `${mode}-card.png`) })
+    } else {
+      // The host replaced that page with Config-derived forms.
+      await expect(page.getByText(/^(插件配置|Plugin configuration)$/).count()).resolves.toBe(0)
+    }
+
+    // The market's own section is registered through `settings.section`,
+    // which 0.1.7 still declares — asserted on BOTH generations, and on the
+    // newer one it is the only market surface a user reaches from Settings.
     await page.getByText(/^(插件市场|Plugin Market)$/).first().click()
     await page.getByPlaceholder(/搜索插件|Search plugins/).waitFor()
+    const artifacts = process.env.DSHM_SETTINGS_ARTIFACTS
     if (artifacts) await page.screenshot({ path: join(artifacts, `${mode}-market.png`) })
     expect(console.errors().filter(text => !/net::|Failed to load resource/.test(text))).toEqual([])
   }

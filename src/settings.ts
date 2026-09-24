@@ -75,6 +75,29 @@ const NAMESPACE_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 /** Namespace the card on the browser side keys itself to. */
 export const MARKET_SETTINGS_NS = 'dsh-market'
 
+/**
+ * What happened when the market offered its namespace to the host (#677).
+ *
+ * Reported rather than kept private because it is the difference between two
+ * host generations, and nothing else in the system can state it: 0.1.7
+ * derives settings from a plugin's Config schema and serves no third-party
+ * namespace at all, so the market's plugin-configuration card cannot be
+ * dispatched there. That is the host's model, not a profile defect — and a
+ * test that cannot tell the two apart either demands a namespace a host
+ * cannot serve, or passes while proving nothing.
+ *
+ * `pending` is the honest third answer: the market boots before the settings
+ * service settles, so a reader can be asked too early to have an answer.
+ */
+export type SettingsNamespaceState = 'pending' | 'registered' | 'unsupported-by-host'
+
+let namespaceState: SettingsNamespaceState = 'pending'
+
+/** The state as of the last attempt to register the namespace. */
+export function settingsNamespaceState(): SettingsNamespaceState {
+  return namespaceState
+}
+
 if (!NAMESPACE_PATTERN.test(MARKET_SETTINGS_NS)) {
   throw new TypeError(`settings namespace "${MARKET_SETTINGS_NS}" must match ${String(NAMESPACE_PATTERN)}`)
 }
@@ -116,6 +139,7 @@ export const MarketSettings: z<MarketSettings> = z.object({
  */
 function canRegister(service: SettingsService, ctx: Context): boolean {
   if (typeof (service as { register?: unknown }).register === 'function') return true
+  namespaceState = 'unsupported-by-host'
   const logger = (ctx as unknown as { logger?: (name: string) => { warn(message: string): void } }).logger
   try {
     logger?.('dsh-market').warn(
@@ -135,6 +159,7 @@ export function installDesktopMarketSettings(ctx: Context): void {
     // schema offers no fields; old stored allowRestart values stay untouched
     // and are never read or watched into the shell-owned runtime config.
     scoped.settings.register(MARKET_SETTINGS_NS, z.object({}), { base: {} })
+    namespaceState = 'registered'
   })
 }
 
@@ -169,6 +194,7 @@ export function installMarketSettings(ctx: Context, resolved: { allowRestart?: b
     const scoped = scopedCtx as unknown as Context & { settings: SettingsService }
     if (!canRegister(scoped.settings, scoped)) return
     const scope = scoped.settings.register(MARKET_SETTINGS_NS, MarketSettings, { base: entry })
+    namespaceState = 'registered'
     source = () => scope.get()
     // Unload restores the composed entry, so a disabled section cannot leave
     // the routes reading a value nobody can see or change any more.

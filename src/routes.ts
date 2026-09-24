@@ -14,6 +14,7 @@ import { Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { load as loadYaml } from 'js-yaml'
 import { forgetCatalog, loadRegistry, pluginCategories } from './registry.ts'
+import { settingsNamespaceState } from './settings.ts'
 import {
   cleanHotDir, hotMount, hotUnmount, listHotMounts, MAX_FAVORITES, MAX_NOTE,
   mountClientOnlyDeps, purgeMarketState, readMarketState, writeMarketState,
@@ -2829,6 +2830,13 @@ export function mountMarketRoutes(
           supervisor: detectedSupervisor(),
           debugger: detectedDebugger(),
           selfManaged: installed.dshmarket !== undefined || installed['dsh-market'] !== undefined,
+          // Whether the host took the market's settings namespace (#677).
+          // `unsupported-by-host` is 0.1.7 and newer, where settings come from
+          // a plugin's Config schema and no third-party namespace is served —
+          // which is why the market's plugin-configuration card is absent
+          // there. Reported so a bug report can say which host generation it
+          // came from instead of leaving the difference invisible.
+          settingsNamespace: settingsNamespaceState(),
           installed,
         })
       },

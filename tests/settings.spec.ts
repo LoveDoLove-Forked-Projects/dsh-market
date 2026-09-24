@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { installMarketSettings, MarketSettings } from '../src/settings.ts'
+import { installMarketSettings, MarketSettings, settingsNamespaceState } from '../src/settings.ts'
 
 /** Minimal cordis stand-in recording the optional `settings` injection. */
 function fakeContext(hasSettings: boolean) {
@@ -32,6 +32,39 @@ function fakeContext(hasSettings: boolean) {
   }
   return ctx
 }
+
+/** Minimal cordis stand-in whose settings service DOES take a namespace. */
+function fakeContextWithRegister() {
+  const ctx = {
+    inject(services: string[], callback: (scoped: unknown) => void) {
+      if (services.includes('settings')) callback(ctx)
+    },
+    settings: {
+      register: () => ({ get: () => ({ allowRestart: true }), watch: () => {} }),
+    },
+    effect: (run: () => unknown) => { run() },
+    on: () => () => {},
+  }
+  return ctx
+}
+
+describe('what the market reports about its namespace (#677)', () => {
+  // The two answers a reader can get, and they exist because a host
+  // generation changed the contract underneath: 0.1.7 derives settings from
+  // a plugin's Config schema and serves no third-party namespace, so the
+  // market's plugin-configuration card cannot be dispatched there. Without
+  // this the difference is invisible — a test (or a bug report) cannot tell
+  // "the host cannot serve it" from "the market failed to register it".
+  it('is unsupported-by-host when the settings service has no register()', () => {
+    installMarketSettings(fakeContext(true) as never, { allowRestart: true })
+    expect(settingsNamespaceState()).toBe('unsupported-by-host')
+  })
+
+  it('is registered when the host takes the namespace', () => {
+    installMarketSettings(fakeContextWithRegister() as never, { allowRestart: true })
+    expect(settingsNamespaceState()).toBe('registered')
+  })
+})
 
 describe('MarketSettings schema', () => {
   it('defaults allowRestart to on', () => {

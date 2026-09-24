@@ -177,7 +177,27 @@ describe.skipIf(!HAS_DSH).sequential('web e2e: the real install chain', () => {
     const served = body.result?.value?.namespaces
     expect(served, `settings.describe returned: ${JSON.stringify(body).slice(0, 300)}`).toBeDefined()
     const names = (served ?? []).map(entry => entry.ns)
-    expect(names, `served namespaces: ${names.join(', ')}`).toContain('dsh-market')
+
+    // Which host generation this is decided by the MARKET, not guessed from
+    // a version string: it is the side that offered the namespace and knows
+    // what the service answered (#677). 0.1.7 derives settings from a
+    // plugin's Config schema and serves no third-party namespace at all —
+    // asserted in its own direction below, so this spec cannot pass by
+    // demanding something a host cannot do, nor by asserting nothing.
+    const status = await (await fetch(`${scaffold.baseUrl}/dsh-market/status`)).json() as {
+      settingsNamespace?: string
+    }
+    expect(status.settingsNamespace, 'the market has booted and must have an answer').not.toBe('pending')
+    if (status.settingsNamespace === 'registered') {
+      expect(names, `served namespaces: ${names.join(', ')}`).toContain('dsh-market')
+    } else {
+      expect(status.settingsNamespace).toBe('unsupported-by-host')
+      expect(names, `served namespaces: ${names.join(', ')}`).not.toContain('dsh-market')
+      // The host's new model is not "less settings": the market's own
+      // configuration still has a home — its Config, read by the routes —
+      // and that is asserted by the running market answering this at all.
+      expect(names.length, 'a host that serves no plugin namespace still serves its own').toBeGreaterThan(0)
+    }
   }, 120_000)
 
   it('refuses a source that is not in the curated registry', async () => {

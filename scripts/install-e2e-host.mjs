@@ -63,6 +63,27 @@ writeFileSync(join(root, 'package.json'), JSON.stringify({
   pnpm: { overrides: OVERRIDES },
 }, null, 2))
 writeFileSync(join(root, '.npmrc'), 'node-linker=hoisted\n')
+// The overrides go in the WORKSPACE file as well, because pnpm 10 moved its
+// settings there and 11 stopped reading `pnpm.overrides` in package.json —
+// measured on pnpm 11.7: with the overrides only in package.json the install
+// landed loader@1.0.5 + hmr@1.0.19 and the host died with the #684 error this
+// script exists to avoid, while `pnpm-workspace.yaml` carried nothing but an
+// `allowBuilds` stub pnpm had written for itself. CI pins pnpm 10, where the
+// package.json form still works, so both are written rather than one
+// replaced: a contributor on a newer pnpm gets the same tree CI gets.
+//
+// `strictDepBuilds: false` is the other half of that stub: pnpm 11 fails the
+// install over dependencies whose build scripts it ignored, and the versions
+// above are exactly the ones that carry them. Nothing here needs those
+// scripts built — this tree boots a `dsh web` for the market, not a terminal.
+writeFileSync(join(root, 'pnpm-workspace.yaml'), [
+  'packages:',
+  '  - .',
+  'strictDepBuilds: false',
+  'overrides:',
+  ...Object.entries(OVERRIDES).map(([name, version]) => `  '${name}': ${version}`),
+  '',
+].join('\n'))
 
 const install = spawnSync('pnpm', ['install', '--no-frozen-lockfile'], {
   cwd: root,

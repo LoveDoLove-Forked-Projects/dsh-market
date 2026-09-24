@@ -931,6 +931,10 @@ describe('host-provided profile and package-operation seams', () => {
     const status = await bed.dispatch('GET', '/dsh-market/status')
     expect(status.json).toMatchObject({
       pnpm: true, restart: false, selfManaged: false, installed: { 'desktop-only': '1.0.0' },
+      // The settings-namespace answer (#677) rides every status read: this
+      // harness mounts the routes without the plugin's apply, which is the
+      // `pending` case — the field must be there for a reader to see it.
+      settingsNamespace: 'pending',
     })
     writeFileSync(join(explicitDir, 'package.json'), '{"dependencies":{"desktop-only":"1.0.0","dshmarket":"1.26.0"}}')
     expect((await bed.dispatch('GET', '/dsh-market/status')).json.selfManaged).toBe(true)
