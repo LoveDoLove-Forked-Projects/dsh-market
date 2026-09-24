@@ -480,6 +480,11 @@ export const zh = {
   checkOverrides: '覆盖关系',
   checkOverridesEmpty: '没有覆盖关系',
   checkOverridden: '覆盖了',
+  checkResiduals: '残留目录',
+  checkResidualsEmpty: '没有发现残缺的包目录或 pnpm 临时目录。',
+  checkResidualsHint: '这些目录没有任何声明引用它们，也不妨碍启动；它们是更新被打断时留下的。退出 DSH 之后可以删除，或直接重新安装对应的插件。',
+  checkResidualTmp: 'pnpm 临时目录',
+  checkResidualIncomplete: '残缺的包目录（缺少 package.json）',
   checkOrphans: '无效的配置条目',
   checkOrphansEmpty: '没有无效配置条目',
   // Orphan patch reason → badge label (issue #98 supplement).
@@ -1081,6 +1086,11 @@ export const en: Record<MarketKey, string> = {
   checkOverrides: 'Overrides',
   checkOverridesEmpty: 'No overrides',
   checkOverridden: 'overrides',
+  checkResiduals: 'Leftover directories',
+  checkResidualsEmpty: 'No incomplete package directories or pnpm temp directories.',
+  checkResidualsHint: 'Nothing in the profile references these, and none of them stops a start: they are what an interrupted update leaves behind. Quit DSH and either delete them or install the plugin again.',
+  checkResidualTmp: 'pnpm temp directory',
+  checkResidualIncomplete: 'incomplete package (no package.json)',
   checkOrphans: 'Invalid config entries',
   checkOrphansEmpty: 'No invalid config entries',
   // Orphan patch reason → badge label (issue #98 supplement).

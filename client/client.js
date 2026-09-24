@@ -665,6 +665,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			checkOverrides: "覆盖关系",
 			checkOverridesEmpty: "没有覆盖关系",
 			checkOverridden: "覆盖了",
+			checkResiduals: "残留目录",
+			checkResidualsEmpty: "没有发现残缺的包目录或 pnpm 临时目录。",
+			checkResidualsHint: "这些目录没有任何声明引用它们，也不妨碍启动；它们是更新被打断时留下的。退出 DSH 之后可以删除，或直接重新安装对应的插件。",
+			checkResidualTmp: "pnpm 临时目录",
+			checkResidualIncomplete: "残缺的包目录（缺少 package.json）",
 			checkOrphans: "无效的配置条目",
 			checkOrphansEmpty: "没有无效配置条目",
 			orphanInsertNotArray: "格式错误",
@@ -1258,6 +1263,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			checkOverrides: "Overrides",
 			checkOverridesEmpty: "No overrides",
 			checkOverridden: "overrides",
+			checkResiduals: "Leftover directories",
+			checkResidualsEmpty: "No incomplete package directories or pnpm temp directories.",
+			checkResidualsHint: "Nothing in the profile references these, and none of them stops a start: they are what an interrupted update leaves behind. Quit DSH and either delete them or install the plugin again.",
+			checkResidualTmp: "pnpm temp directory",
+			checkResidualIncomplete: "incomplete package (no package.json)",
 			checkOrphans: "Invalid config entries",
 			checkOrphansEmpty: "No invalid config entries",
 			orphanInsertNotArray: "malformed",
@@ -5497,6 +5507,36 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								]
 							}, i))
 						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
+						title: t("checkResiduals"),
+						count: report.residuals?.length ?? 0,
+						empty: t("checkResidualsEmpty"),
+						problem: false,
+						overview: report.residuals?.[0]?.path,
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+							className: Market_module_css_default.panelNote,
+							children: t("checkResidualsHint")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: Market_module_css_default.diagList,
+							children: (report.residuals ?? []).map((residual) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: Market_module_css_default.diagRow,
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: Market_module_css_default.nm,
+										children: residual.name
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: Market_module_css_default.spec,
+										children: t(residual.kind === "tmp-directory" ? "checkResidualTmp" : "checkResidualIncomplete")
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("code", {
+										className: Market_module_css_default.diagVal,
+										children: residual.path
+									})
+								]
+							}, residual.path))
+						})]
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(CollapsibleSection, {
 						title: t("orderSection"),

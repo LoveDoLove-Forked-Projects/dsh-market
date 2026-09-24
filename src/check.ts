@@ -26,7 +26,7 @@
  * what actually mounts at boot.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { createRequire, isBuiltin } from 'node:module'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { JSON_SCHEMA, Type, load } from 'js-yaml'
@@ -109,6 +109,30 @@ export interface LoaderRow {
   layer: string
   kind: 'insert' | 'patch'
   name?: string
+}
+
+/**
+ * A directory in `node_modules` that no declaration accounts for and that
+ * cannot be used either (#663).
+ *
+ * The shape this exists for: an update blocked by open files leaves the
+ * target directory without its `package.json`, and the declaration that
+ * pointed at it is gone (the market drops it so the next start can compose).
+ * What remains is invisible — nothing in the profile references it, and
+ * `pnpm install` will not repair an empty shell ("Already up to date", #663)
+ * — so a user who goes looking finds an empty directory and no explanation.
+ */
+export interface ResidualDirectory {
+  /** Package name when it can be read, else the directory's own name. */
+  name: string
+  /** Path relative to the profile, for the diagnostics listing. */
+  path: string
+  kind: 'incomplete-package' | 'tmp-directory'
+  /**
+   * The profile still declares it. Then this is not junk: composition will
+   * try to load it, and the bundle layers above already report why it fails.
+   */
+  declared: boolean
 }
 
 /** An id present in more than one composed row — the #98 duplicate-id boot failure. */
@@ -220,6 +244,14 @@ export interface CheckReport {
   orderConflicts: Array<{ name: string; reason: string }>
   /** LOOT-style auto-fix: a community order satisfying every declared rule. */
   suggestedOrder: { ok: true; order: string[] } | { ok: false; cycle: string[] } | null
+  /**
+   * Leftover directories: incomplete packages and pnpm temp directories.
+   * Reported structurally rather than as warnings — same reasoning as
+   * `duplicateNames` above: a leftover that nothing references harms nothing
+   * today, and a warning on every profile that ever had an interrupted
+   * install would train people to ignore the list.
+   */
+  residuals: ResidualDirectory[]
   summary: CheckSummary
 }
 
@@ -1042,6 +1074,86 @@ export function buildBundleLayers(
 }
 
 /**
+ * Which directories in `node_modules` are leftovers (#663).
+ *
+ * Two shapes, and both need to be VISIBLE rather than cleaned: a directory
+ * without a readable `package.json` (what a lock-blocked update leaves), and
+ * pnpm's `<name>_tmp_<pid>_<n>` staging directory (what an interrupted one
+ * leaves). Neither can be removed from in here in the case that produces
+ * them — the plugin's own process holds the directory open, so the rename
+ * and delete that would clear it are the operations that were just refused.
+ * Telling the user what is on disk, and which of it is merely junk, is the
+ * part this process can do.
+ *
+ * Bounded on purpose. The top level is scanned in full (that is where the
+ * profile's own packages live), plus one level inside the virtual store:
+ * pnpm stages a package's update in the `node_modules` beside it, so that is
+ * where a dependency's temp directory appears. It does NOT recurse through
+ * the whole virtual store: on a large Windows profile that is thousands of
+ * directories for a page the user opens by hand, and the store's OWN temp
+ * directories are already reclaimed by `cleanOrphanedStoreTmp`.
+ */
+export function findResidualDirectories(
+  profileDirectory: string,
+  declared: ReadonlySet<string>,
+): ResidualDirectory[] {
+  const out: ResidualDirectory[] = []
+  // pnpm's staging name, from its own rename: `<name>_tmp_<pid>_<n>`.
+  const tmpShape = /^(.+)_tmp_\d+_\w+$/
+
+  const consider = (directory: string, entry: string, relative: string): void => {
+    // pnpm's own bookkeeping lives in here beside the packages: `.pnpm` (the
+    // virtual store), `.bin`, `.modules.yaml`, `.ignored`. None of them is a
+    // package, so none of them is a broken one.
+    if (entry.startsWith('.')) return
+    let stats: ReturnType<typeof lstatSync>
+    try {
+      stats = lstatSync(join(directory, entry))
+    } catch {
+      return
+    }
+    // A symlink is how pnpm links every installed package to its store
+    // entry. A DANGLING one is a different failure (and `#708` cleans the
+    // market's own); counting healthy links as leftovers would flag every
+    // profile in existence.
+    if (!stats.isDirectory()) return
+    const tmp = tmpShape.exec(entry)
+    if (tmp !== null) {
+      out.push({ name: tmp[1]!, path: join(relative, entry), kind: 'tmp-directory', declared: declared.has(tmp[1]!) })
+      return
+    }
+    if (declared.has(entry)) return
+    let readable = false
+    try {
+      JSON.parse(readFileSync(join(directory, entry, 'package.json'), 'utf8'))
+      readable = true
+    } catch { /* missing or unparseable — that is the finding */ }
+    if (!readable) out.push({ name: entry, path: join(relative, entry), kind: 'incomplete-package', declared: false })
+  }
+
+  const nodeModules = join(profileDirectory, 'node_modules')
+  try {
+    for (const entry of readdirSync(nodeModules)) consider(nodeModules, entry, 'node_modules')
+  } catch { /* no node_modules: nothing to report */ }
+
+  const pnpmDirectory = join(nodeModules, '.pnpm')
+  let pnpmEntries: string[] = []
+  try {
+    pnpmEntries = readdirSync(pnpmDirectory)
+  } catch { /* no virtual store */ }
+  for (const entry of pnpmEntries) {
+    const nested = join(pnpmDirectory, entry, 'node_modules')
+    const relative = join('node_modules', '.pnpm', entry, 'node_modules')
+    try {
+      for (const name of readdirSync(nested)) consider(nested, name, relative)
+    } catch { /* unreadable nested node_modules */ }
+  }
+
+  out.sort((left, right) => left.path.localeCompare(right.path))
+  return out
+}
+
+/**
  * Analyze one profile directory (issue #98, phase 1). Pure function of the
  * directory contents — safe to call on every market open.
  */
@@ -1065,6 +1177,11 @@ export function analyzeProfile(profileDirectory: string, options: CheckOptions =
     ? manifest.dsh.profile.bundles.filter((name): name is string => typeof name === 'string')
     : []
   const specs = manifest?.dependencies ?? {}
+  // Declared = what the profile asks to load. A leftover directory under one
+  // of these names is a boot problem (the bundle layers above judge it), and
+  // an undeclared one is junk the user can clear — the distinction is the
+  // whole point of the listing (#663).
+  const declaredNames = new Set([...Object.keys(specs), ...bundleNames])
   const built = buildBundleLayers(profileDirectory, bundleNames, specs, dshInstall)
   const bundles = built.bundles
   const bundleLayers = built.layers
@@ -1300,6 +1417,7 @@ export function analyzeProfile(profileDirectory: string, options: CheckOptions =
     multiVersion,
     orderConflicts,
     suggestedOrder,
+    residuals: findResidualDirectories(profileDirectory, declaredNames),
     summary: {
       ok: errors.length === 0,
       errors,

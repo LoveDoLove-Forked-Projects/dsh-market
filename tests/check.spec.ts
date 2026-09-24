@@ -557,6 +557,71 @@ describe('user patch package resolution (#205)', () => {
     expect(report.summary.errors.some(error => error.includes('community-bundle'))).toBe(true)
   })
 
+  it('names the leftover directories the profile no longer declares (#663)', () => {
+    const dir = pdir()
+    writeProfile(dir, {
+      name: 'web-profile',
+      dependencies: { 'dsh-loop': '^1.0.0', 'broken-declared': '^1.0.0' },
+      dsh: { profile: { bundles: ['dsh-loop', 'broken-declared'] } },
+    })
+    writeLoadablePackage(dir, 'dsh-loop')
+    // The shape a lock-blocked update leaves: the directory is still there,
+    // its package.json is not, and the declaration that pointed at it is gone.
+    mkdirSync(join(dir, 'node_modules', 'dsh-pet'), { recursive: true })
+    // pnpm's staging directory, top level.
+    mkdirSync(join(dir, 'node_modules', 'dsh-pet_tmp_15548_10'), { recursive: true })
+    mkdirSync(join(dir, 'node_modules', 'dsh-pet_tmp_15548_10', 'lib'), { recursive: true })
+    // ...and one for a dependency, which pnpm stages beside it in the store.
+    mkdirSync(join(dir, 'node_modules', '.pnpm', 'dsh-loop@1.0.0', 'node_modules', 'dsh-loop_tmp_99_2'), { recursive: true })
+    // A DECLARED package with a broken directory is not a leftover: the
+    // bundle layers already say it cannot load, and calling it junk here
+    // would tell the user to clear a package the profile is asking for.
+    writeProfile(join(dir, 'node_modules', 'broken-declared'), { name: 'broken-declared' })
+    rmSync(join(dir, 'node_modules', 'broken-declared', 'package.json'))
+
+    const report = analyzeProfile(dir, { dshInstallDir: null, homeDir: join(tmp, 'empty-home') })
+
+    expect(report.residuals).toEqual([
+      { name: 'dsh-loop', path: join('node_modules', '.pnpm', 'dsh-loop@1.0.0', 'node_modules', 'dsh-loop_tmp_99_2'), kind: 'tmp-directory', declared: true },
+      { name: 'dsh-pet', path: join('node_modules', 'dsh-pet'), kind: 'incomplete-package', declared: false },
+      { name: 'dsh-pet', path: join('node_modules', 'dsh-pet_tmp_15548_10'), kind: 'tmp-directory', declared: false },
+    ])
+    // Nothing here is a boot failure, and the summary must not read like one:
+    // a warning on every profile that ever had an interrupted install is how
+    // a list stops being read.
+    // ...and the declared one is reported by the other surface instead,
+    // which is where a user looking for "why will this not boot" is sent.
+    // The bundle layers own that one, and this is the surface the notice
+    // points at. Its wording is "not installed" even though the directory is
+    // sitting right there — accurate about the boot ("will fail to boot"),
+    // imprecise about what the user will see in `node_modules`. Left as-is
+    // rather than quietly encoded: the leftover listing above is what names
+    // the directory, and changing the layer message is a separate edit.
+    expect(report.bundles.find(layer => layer.name === 'broken-declared')?.error)
+      .toContain('will fail to boot')
+    // A leftover is not a boot failure, and the summary must not read like
+    // one: a warning on every profile that ever had an interrupted install is
+    // how a list stops being read. (These fixtures fail to BOOT for their own
+    // reasons — the leftover names must simply not be among them.)
+    expect(report.summary.errors.filter(line => line.includes('dsh-pet'))).toEqual([])
+    expect(report.summary.warnings.filter(line => line.includes('dsh-pet'))).toEqual([])
+  })
+
+  it('leaves healthy packages and pnpm links out of the leftover list', () => {
+    const dir = pdir()
+    writeProfile(dir, { name: 'web-profile', dependencies: {} })
+    writeLoadablePackage(dir, 'healthy')
+    // Every installed package is a symlink into the store; flagging those
+    // would put every profile in existence on this list.
+    mkdirSync(join(dir, 'node_modules', '.pnpm', 'linked@1.0.0', 'node_modules', 'linked'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules', '.pnpm', 'linked@1.0.0', 'node_modules', 'linked', 'package.json'), '{"name":"linked"}')
+    symlinkSync(join('..', '.pnpm', 'linked@1.0.0', 'node_modules', 'linked'), join(dir, 'node_modules', 'linked'), 'dir')
+
+    const report = analyzeProfile(dir, { dshInstallDir: null, homeDir: join(tmp, 'empty-home') })
+
+    expect(report.residuals).toEqual([])
+  })
+
   it('does not skip a broken nearer package directory for a healthy parent copy', () => {
     const profiles = join(tmp, 'profiles')
     const dir = join(profiles, 'web')
