@@ -48,9 +48,11 @@ describe('apply() icon gaps (#671)', () => {
   })
 })
 
-it('keeps the main market on hosts without settingsScope (#516)', () => {
+/** A host that declares only the slots it has, and records what the market did. */
+function hostWith(declared: readonly string[]) {
   const registrations: Record<string, unknown>[] = []
   const injections: string[][] = []
+  const slots = new Set(declared)
   apply({
     effect: (run: () => unknown) => { run() },
     on: () => () => {},
@@ -60,11 +62,30 @@ it('keeps the main market on hosts without settingsScope (#516)', () => {
     },
     theme: { getTheme: () => null, setTheme: () => {} },
     slots: {
-      inject: (_slot: string, register: () => unknown) => { register() },
+      // A real host fires this only for the slots it declares — which is what
+      // makes the slot itself the feature detection for the newer card seat.
+      inject: (slot: string, register: () => unknown) => { if (slots.has(slot)) register() },
       register: (options: Record<string, unknown>) => { registrations.push(options); return () => {} },
     },
+    // The service injections are RECORDED but never fired on this host: that
+    // is the "host without settingsScope" case the market must survive.
     inject: (services: string[]) => { injections.push(services) },
   } as Parameters<typeof apply>[0])
+  return { registrations: registrations.map(entry => entry.name), injections }
+}
+
+it('keeps the main market on hosts without settingsScope (#516)', () => {
+  const { registrations, injections } = hostWith(['settings.section', 'shell.overlay'])
   expect(injections).toEqual([['settingsScope']])
-  expect(registrations.map(entry => entry.name)).toEqual(['settings.section', 'shell.overlay'])
+  expect(registrations).toEqual(['settings.section', 'shell.overlay'])
+})
+
+it('places the settings card on the bundle page a 0.1.7 host declares (#677)', () => {
+  // The newer line has no plugin-configuration page and no settingsScope; it
+  // declares `plugins.bundle.config`, which its own contract names as where a
+  // third-party bundle's configuration belongs. The card must follow the
+  // slot, and the market must still register everything else.
+  const { registrations, injections } = hostWith(['settings.section', 'shell.overlay', 'plugins.bundle.config'])
+  expect(injections).toEqual([['settingsScope']])
+  expect(registrations).toEqual(['settings.section', 'plugins.bundle.config', 'shell.overlay'])
 })

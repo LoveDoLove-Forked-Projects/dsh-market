@@ -51,6 +51,16 @@ interface SettingsScopeHost {
   }
 }
 
+/**
+ * The package name the host keys a bundle's own configuration by.
+ *
+ * `plugins.bundle.config` on dsh 0.1.7+ is keyed by the BUNDLE's package
+ * name. The market's is `dshmarket` — the name `dsh plugin add dshmarket`
+ * installs and the one its own `package.json` declares — which is not the
+ * same string as the locale namespace (`dsh-market`) this file uses for copy.
+ */
+const MARKET_PACKAGE_NAME = 'dshmarket'
+
 /** The subset of the theme service this plugin touches. */
 interface ThemeService {
   getTheme(): ThemeSnapshot | null
@@ -205,6 +215,35 @@ export function apply(ctx: MarketClientContext): void {
       inject: () => ({ t }),
     }, () => h(SettingsCard, { t, onRemoved: () => { sectionGate.retire() } })))
   })
+
+  // The card's seat on 0.1.7+ (#677). The host moved a plugin's own
+  // configuration onto its bundle's page in the sidebar's Plugins page, and
+  // states in its own slot contract where a THIRD-PARTY bundle's
+  // configuration belongs: `plugins.item` is "OCCUPIED by the official
+  // settings pages", and "a bundle's configuration belongs in
+  // `plugins.bundle.config` or `plugins.row.config` instead". So this is the
+  // same seat `settings.plugin.item` was on the older line, under its new
+  // name — not a place chosen here.
+  //
+  // Detection is the slot itself: `slots.inject` waits for the slot to exist,
+  // so a host that never declares it (every release before 0.1.7) never runs
+  // this, and no version string is consulted.
+  const bundleConfigCtx = ctx as unknown as {
+    slots: {
+      inject(name: string, register: () => unknown): void
+      register(options: Record<string, unknown>, render: (ownerProps: { view?: string }) => unknown): unknown
+    }
+  }
+  bundleConfigCtx.slots.inject('plugins.bundle.config', () => bundleConfigCtx.slots.register({
+    name: 'plugins.bundle.config',
+    key: MARKET_PACKAGE_NAME,
+    locale: NS,
+    inject: () => ({ t }),
+  }, (ownerProps: { view?: string } = {}) => ownerProps.view === 'summary'
+    // `summary` is this entry's one-liner in the list, which the market's own
+    // description already carries; the card is the page.
+    ? null
+    : h(SettingsCard, { t, onRemoved: () => { sectionGate.retire() } })))
 
   const Toast = () => h(InstallToast, { t })
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({

@@ -12699,6 +12699,15 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		function missingPrimitives(mod, required = REQUIRED_PRIMITIVES) {
 			return required.filter((name) => mod[name] === void 0);
 		}
+		/**
+		* The package name the host keys a bundle's own configuration by.
+		*
+		* `plugins.bundle.config` on dsh 0.1.7+ is keyed by the BUNDLE's package
+		* name. The market's is `dshmarket` — the name `dsh plugin add dshmarket`
+		* installs and the one its own `package.json` declares — which is not the
+		* same string as the locale namespace (`dsh-market`) this file uses for copy.
+		*/
+		const MARKET_PACKAGE_NAME = "dshmarket";
 		const name = "dsh-market";
 		const inject = [
 			"slots",
@@ -12791,6 +12800,18 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					}
 				})));
 			});
+			const bundleConfigCtx = ctx;
+			bundleConfigCtx.slots.inject("plugins.bundle.config", () => bundleConfigCtx.slots.register({
+				name: "plugins.bundle.config",
+				key: MARKET_PACKAGE_NAME,
+				locale: NS,
+				inject: () => ({ t })
+			}, (ownerProps = {}) => ownerProps.view === "summary" ? null : (0, react.createElement)(SettingsCard, {
+				t,
+				onRemoved: () => {
+					sectionGate.retire();
+				}
+			})));
 			const Toast = () => (0, react.createElement)(InstallToast, { t });
 			ctx.slots.inject("shell.overlay", () => ctx.slots.register({
 				name: "shell.overlay",

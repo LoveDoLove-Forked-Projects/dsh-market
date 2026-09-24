@@ -52,8 +52,30 @@ describe.skipIf(!dshAvailable())('host dispatches the market settings card (#516
       const shot = process.env.DSHM_SETTINGS_ARTIFACTS
       if (shot) await card.locator('..').screenshot({ path: join(shot, `${mode}-card.png`) })
     } else {
-      // The host replaced that page with Config-derived forms.
+      // The host replaced that page with Config-derived forms and moved a
+      // plugin's own configuration onto its bundle's page in the sidebar's
+      // Plugins page — its slot contract says where a third-party bundle's
+      // configuration belongs, and `plugins.bundle.config` is where this card
+      // registers (#677). So the card is asserted THERE, on the seat the host
+      // designates, rather than only asserting that the old page is gone.
       await expect(page.getByText(/^(插件配置|Plugin configuration)$/).count()).resolves.toBe(0)
+      // Leave Settings first: the sidebar's Plugins entry is the one the page
+      // navigates by, and a panel *title* of the same name sits in the way
+      // while Settings is open (measured: the click resolves to the title and
+      // never becomes stable).
+      await page.getByRole('button', { name: /^(Close|关闭)$/ }).first().click()
+      await page.waitForTimeout(500)
+      await page.getByText(/^(Plugins|插件)$/).first().click()
+      await page.getByText(/dshmarket/i).first().click()
+      const entry = page.getByText(/^(View the plugin market version and settings\.|查看插件市场版本与设置。)$/).first()
+      await entry.waitFor({ timeout: 20_000 })
+      await entry.click()
+      await page.getByText(/^(Update channel|更新通道)$/).waitFor({ timeout: 15_000 })
+      await page.getByText(/^(Download region|下载区域)$/).waitFor({ timeout: 15_000 })
+      const shot = process.env.DSHM_SETTINGS_ARTIFACTS
+      if (shot) await page.screenshot({ path: join(shot, `${mode}-card.png`) })
+      // Back to the market's own page for the assertion every host shares.
+      await page.getByRole('button', { name: /^(设置|Settings)$/ }).first().click()
     }
 
     // The market's own section is registered through `settings.section`,
