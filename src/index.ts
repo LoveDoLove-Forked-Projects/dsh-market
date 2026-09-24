@@ -8,7 +8,7 @@ import { dirname, isAbsolute } from 'node:path'
 import { createDesktopPluginRuntime, setHostPackageManager, type DesktopPnpmLike, type HostPackageManager } from './dsh-cli.ts'
 import { createOfficialDesktopRuntime, type OfficialPluginManagerLike } from './official-desktop.ts'
 import { isDshProfileName } from './profile.ts'
-import { mountMarketRoutes, type MarketConfig, type MarketHost } from './routes.ts'
+import { mountMarketRoutes, type HostPluginActivation, type MarketConfig, type MarketHost } from './routes.ts'
 import { installDesktopMarketSettings, installMarketSettings } from './settings.ts'
 import type { AgentsServiceLike } from './agents.ts'
 
@@ -41,6 +41,12 @@ interface DesktopProfilesLike {
     readonly name: string
     readonly dir: string
   }
+  /**
+   * A host that owns activation for the whole composition publishes this so
+   * the market can ask it to replay instead of mounting a second time (#551).
+   * Optional: a host that only knows `current` keeps working unchanged.
+   */
+  readonly pluginActivation?: HostPluginActivation
 }
 
 interface MarketEffectHost extends MarketHost {
@@ -223,7 +229,10 @@ export function apply(ctx: Context, config?: Config): void {
       const desktopHost = desktopCtx as unknown as MarketEffectHost
       installDesktopMarketSettings(desktopCtx)
       desktopHost.effect(() => {
-        const disposeRoutes = mountMarketRoutes(host, resolved, runtime, agentsLookupOf(ctx))
+        // The host that publishes `desktopProfiles` is the one that may own
+        // activation (#551): hand it the bridge it published, if any, so the
+        // market can ask for a replay instead of mounting a second entry.
+        const disposeRoutes = mountMarketRoutes(host, resolved, runtime, agentsLookupOf(ctx), desktopProfiles.pluginActivation)
         return async () => {
           disposeRoutes()
           await runtime.dispose()

@@ -661,6 +661,8 @@ type Handler = (request: unknown, response: unknown) => void | Promise<void>
 interface Testbed {
   dispatch(method: string, path: string, body?: unknown, options?: { crossOrigin?: boolean; remoteAddress?: string; forwarded?: boolean }): Promise<{ status: number; json: any }>
   loaderEntries: { options: { name: string; disabled?: boolean | null }; fiber?: unknown; update(o: { disabled: boolean | null }): Promise<void> }[]
+  /** Every `host.plugin()` call — how a market hot mount shows itself. */
+  hostPluginCalls: unknown[]
   /** Fire a host event the market subscribes to, e.g. a plugin fiber coming up. */
   emit(event: string, payload: unknown): void
   dispose(): void
@@ -670,9 +672,11 @@ function createTestbed(
   config: { profile?: string; allowRestart?: boolean; profileDirectory?: string; desktopHost?: boolean; region?: 'global' | 'china'; dshInstallDir?: string } = {},
   runtime?: Parameters<typeof mountMarketRoutes>[2],
   agents?: AgentsServiceLike,
+  activation?: Parameters<typeof mountMarketRoutes>[4],
 ): Testbed {
   const routes = new Map<string, Handler>()
   const loaderEntries: Testbed['loaderEntries'] = []
+  const hostPluginCalls: unknown[] = []
   const listeners = new Map<string, ((payload: unknown) => void)[]>()
   const host = {
     webServer: {
@@ -682,7 +686,13 @@ function createTestbed(
       },
     },
     loader: { entries: () => loaderEntries },
-    plugin: () => ({ await: () => Promise.resolve(), dispose: () => {} }),
+    plugin: (plugin: unknown) => {
+      // Recorded, not asserted here: `hotMount` creates its `.dsh-market`
+      // loader entry through this call, so a count of these IS the count of
+      // market-created entries (#551).
+      hostPluginCalls.push(plugin)
+      return { await: () => Promise.resolve(), dispose: () => {} }
+    },
     on: (event: string, callback: (payload: unknown) => void) => {
       const list = listeners.get(event) ?? []
       list.push(callback)
@@ -695,7 +705,7 @@ function createTestbed(
   // every install assertion depend on which registry answered first —
   // and, as this suite proved once, would let a spec resolve a REAL commit
   // through a REAL proxy. Specs that care about the mirrors set it.
-  const dispose = mountMarketRoutes(host as never, { profile: 'web', region: 'global', ...config }, runtime, () => agents)
+  const dispose = mountMarketRoutes(host as never, { profile: 'web', region: 'global', ...config }, runtime, () => agents, activation)
   async function dispatch(method: string, path: string, body?: unknown, options?: { crossOrigin?: boolean }) {
     const handler = routes.get(path.split('?')[0])
     if (handler === undefined) throw new Error(`no route: ${path}`)
@@ -724,7 +734,7 @@ function createTestbed(
   function emit(event: string, payload: unknown): void {
     for (const callback of listeners.get(event) ?? []) callback(payload)
   }
-  return { dispatch, loaderEntries, emit, dispose }
+  return { dispatch, loaderEntries, emit, hostPluginCalls, dispose }
 }
 
 // ---------------------------------------------------------------- suite
@@ -1501,6 +1511,40 @@ describe('install flow', () => {
 
     expect(listed.json.activation['stray-package']).toMatchObject({ state: 'inert', bundle: false })
     expect(listed.json.activation['stray-package'].dependencyOf).toBeUndefined()
+  })
+
+  it('asks the host to activate instead of creating a second loader entry (#551)', async () => {
+    bed.dispose()
+    fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
+    const activate = vi.fn().mockResolvedValue({ ok: true as const })
+    bed = createTestbed({}, undefined, undefined, { activate })
+    const before = bed.hostPluginCalls.length
+
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    expect(r.status).toBe(200)
+    expect(r.json.hot).toBe(true)
+    expect(activate).toHaveBeenCalledOnce()
+    // `hotMount` creates the market's own `.dsh-market` loader entry through
+    // `host.plugin()`. In host-owned mode it must not run at all: one plugin,
+    // one activation source. This is what the duplicate prefix-route
+    // collision was made of.
+    expect(bed.hostPluginCalls).toHaveLength(before)
+  })
+
+  it('reports restart only when the host replay itself failed (#551)', async () => {
+    bed.dispose()
+    fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
+    const activate = vi.fn().mockResolvedValue({ ok: false as const, error: 'composition replay failed' })
+    bed = createTestbed({}, undefined, undefined, { activate })
+    const before = bed.hostPluginCalls.length
+
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    expect(r.status).toBe(200)
+    expect(r.json.hot).toBe(false)
+    expect(activate).toHaveBeenCalledOnce()
+    expect(bed.hostPluginCalls).toHaveLength(before)
   })
 
   it('reports host contracts declared as normal dependencies without rejecting the plugin', async () => {
@@ -4249,6 +4293,42 @@ describe('uninstall flow', () => {
     const r = await bed.dispatch('POST', '/dsh-market/uninstall', { name: '../../evil' })
     expect(r.status).toBe(400)
     expect(fake.calls.some(call => call[0] === 'remove')).toBe(false)
+  })
+
+  it('asks the host to uninstall, and still disables any entry this process can see (#551, #213)', async () => {
+    bed.dispose()
+    fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
+    const activate = vi.fn().mockResolvedValue({ ok: true as const })
+    bed = createTestbed({}, undefined, undefined, { activate })
+    await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+    activate.mockClear()
+    expect(hot.mounts).toEqual([])
+
+    // The shape this decision is about: a machine that ran plain `dsh web`
+    // before the host took over can still have a loader entry THIS process
+    // can see, even though the host owns activation now.
+    const entry = {
+      options: { id: 'dsh-loop', name: 'dsh-loop', disabled: null as boolean | null },
+      fiber: {} as unknown,
+      update: vi.fn(async (options: { disabled: boolean | null }) => {
+        entry.options.disabled = options.disabled
+        entry.fiber = options.disabled === true ? undefined : {}
+      }),
+    }
+    bed.loaderEntries.push(entry)
+
+    const r = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'dsh-loop' })
+
+    expect(r.status).toBe(200)
+    expect(r.json.hot).toBe(true)
+    expect(activate).toHaveBeenCalledOnce()
+    // The market's own hot tree is not asked to remove what it never created...
+    expect(hot.mounts).toEqual([])
+    // ...but the entry it CAN see is still disabled, and that is deliberate:
+    // the host owns the entry it made, the market owns whatever entry it can
+    // still see, and success from one source is not evidence about the other
+    // (#213). It costs a name scan when there is nothing to disable.
+    expect(entry.options.disabled).toBe(true)
   })
 
   it('refuses to remove a package still inserted by the user patch (#165)', async () => {

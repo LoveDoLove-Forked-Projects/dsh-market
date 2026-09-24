@@ -30,7 +30,7 @@ import {
   type PluginCommandRuntime,
 } from './dsh-cli.ts'
 import { packageOfEntryName } from './entry-identity.ts'
-import { addProfileBundle, dropFromManifest, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
+import { addProfileBundle, bundlePatchInsertedIds, dropFromManifest, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
 import { assessProfile, classifyPeer, introducedDuplicateNames, introducedRisks, type CompatibilityRisk } from './compatibility.ts'
 import { runningAgentIds, type AgentsLookup } from './agents.ts'
 import { analyzeProfile, corePackageNames, type DuplicateName } from './check.ts'
@@ -107,6 +107,24 @@ export interface MarketHost {
   plugin(plugin: unknown, config: unknown): { await(): Promise<unknown>; dispose(): Promise<unknown> | void }
   on?(event: string, callback: (fiber: { entry?: { options?: { name?: string } } }) => void): () => void
   logger?: { info?(message: string): void; warn(message: string): void }
+}
+
+/**
+ * A host that owns activation for the whole composition.
+ *
+ * Some hosts watch the profile and replay it the moment the manifest lands
+ * (measured against a bun-hmr watcher), which makes the market's own hot
+ * mount a SECOND loader entry for an id the live composition already serves:
+ * duplicate prefix routes, and a "restart required" verdict for a plugin that
+ * is already up. Where the host publishes this bridge, the market asks it to
+ * replay and reports what it answers, instead of mounting on its own.
+ *
+ * Optional by construction: absent on every host without the capability, and
+ * named with `pluginActivation?` so a host that only knows `current` keeps
+ * working unchanged.
+ */
+export interface HostPluginActivation {
+  activate(): Promise<{ ok: true } | { ok: false; error: string }>
 }
 
 export interface MarketConfig {
@@ -278,6 +296,7 @@ export function mountMarketRoutes(
   config: MarketConfig,
   commandRuntime?: PluginCommandRuntime,
   agentsLookup?: AgentsLookup,
+  hostActivation?: HostPluginActivation,
 ): () => void {
   let disposed = false
   // An ordinary profile must resolve under DSH_HOME by the same rules as the
@@ -1095,13 +1114,24 @@ export function mountMarketRoutes(
     if (result.exitCode !== 0 || result.timedOut || result.cancelled) {
       return { ok: false, hot: false, detail: failureDetail(result) }
     }
-    // Both cleanups run — see the uninstall route's note on #213: a package
-    // with two activation sources must not have the second one skipped
-    // because the first succeeded.
-    const unmounted = await hotUnmount(name)
+    // A host that owns the composition replays it instead of being
+    // second-guessed: the market's hot tree would look for an entry it never
+    // created, miss the host's own, and report "restart required" about a
+    // plugin the host just unmounted.
+    const hostResult = hostActivation ? await hostActivation.activate() : undefined
+    const unmounted = hostActivation ? hostResult!.ok : await hotUnmount(name)
+    if (hostResult !== undefined && !hostResult.ok) {
+      logEvent('warn', 'host-activation', `${name}: ${hostResult.error}`)
+    }
     // #662: the removal is confirmed — drop the host bridge link the boot
     // projection may have left pointing at the now-gone package.
     removeDanglingHostBridge(name, activeProfileDir, config.dshInstallDir ?? findDshInstallDir())
+    // Kept on the host path too, and deliberately: `setEntryDisabled` only
+    // scans the entries THIS process can see by name and returns false when
+    // none match, so it costs a lookup — and it preserves what #213 is about.
+    // The host owns the entry it created; the market owns any it can still
+    // see, and "some other activation source succeeded" is not evidence about
+    // this one.
     const entryDisabled = await themes.setEntryDisabled(name, true)
     const hot = (unmounted || entryDisabled) && !native
     if (native) {
@@ -4650,7 +4680,15 @@ sendJson(response, 200, { updates })
               // from disk truth) — the host node_modules bridge the boot
               // projection left for this package must not outlive it.
               removeDanglingHostBridge(name, activeProfileDir, config.dshInstallDir ?? findDshInstallDir())
-              hot = await hotUnmount(name)
+              // A host that owns the composition replays it: asking first is
+              // what keeps the market from looking for an entry it never
+              // created, and then telling the user to restart about a plugin
+              // the host has already unmounted.
+              const hostResult = hostActivation ? await hostActivation.activate() : undefined
+              hot = hostActivation ? hostResult!.ok : await hotUnmount(name)
+              if (hostResult !== undefined && !hostResult.ok) {
+                logEvent('warn', 'host-activation', `${name}: ${hostResult.error}`)
+              }
               // Bundle-layer plugins never hot-mount, but their loader entry
               // is still LIVE in this process — after the remove deleted the
               // package, the next refresh would 404 on its client bundle and
@@ -4666,6 +4704,10 @@ sendJson(response, 200, { updates })
               // (#213). setEntryDisabled just scans entries by name and
               // returns false when none match, so calling it after a
               // successful unmount costs a lookup and nothing else.
+              //
+              // The same reasoning holds when the HOST reported success: it
+              // owns the entry it created, the market owns whatever entry it
+              // can still see, and neither is evidence about the other.
               const entryDisabled = await themes.setEntryDisabled(name, true)
               hot = hot || entryDisabled
               if (heldNativeAddon && hot) {
@@ -5098,12 +5140,36 @@ sendJson(response, 200, { updates })
                 writeMarketState(activeProfileDir, { disabled, groups, groupOrder })
                 // Theme installs auto-activate (and deactivate the previous
                 // theme) so the result is visible right after the refresh.
-                hot = true
-                for (const name of added) {
-                  const live = pluginCategories(entry).includes('theme')
-                    ? await themes.activateTheme(name)
-                    : (await hotMount(host, activeProfileDir, name)).ok
-                  if (!live) hot = false
+                if (hostActivation) {
+                  // The host's watcher owns the entire composition. Waiting
+                  // for its replay gives the market a real live/fail verdict
+                  // without creating the second loader entry that races it
+                  // and double-registers the plugin's routes.
+                  const result = await hostActivation.activate()
+                  hot = result.ok
+                  if (!result.ok) logEvent('warn', 'host-activation', `${added.join(', ')}: ${result.error}`)
+                } else {
+                  hot = true
+                  for (const name of added) {
+                    // Some hosts activate the install themselves — a
+                    // composition watcher replays the profile the moment the
+                    // manifest lands, so the install command can return AFTER
+                    // the plugin is already mounted. Hot-mounting again would
+                    // insert a second loader entry for an id the live
+                    // composition already serves. An entry whose fiber is
+                    // already up is ADOPTED, not re-mounted: the loader
+                    // inventory (live names and `#<id>`) is the fact
+                    // "already active this session", the same source
+                    // verifyActivation reads below.
+                    const live = liveNames().has(name)
+                      || liveNames().has(`#${name}`)
+                      || bundlePatchInsertedIds(join(activeProfileDir, 'node_modules', name))
+                        .some(id => liveNames().has(`#${id}`))
+                      || (pluginCategories(entry).includes('theme')
+                        ? await themes.activateTheme(name)
+                        : (await hotMount(host, activeProfileDir, name)).ok)
+                    if (!live) hot = false
+                  }
                 }
                 activation = {}
                 const live = liveNames()
