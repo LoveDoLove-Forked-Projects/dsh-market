@@ -236,6 +236,7 @@ vi.mock('../src/dsh-cli.ts', () => {
   function setBuildEnvSource(source: () => Readonly<Record<string, string>>): () => Readonly<Record<string, string>> {
     const previous = buildEnvSource
     buildEnvSource = source
+    hot.buildEnvSource = source
     return previous
   }
   async function execute(args: string[]): Promise<unknown> {
@@ -525,6 +526,8 @@ const hot = vi.hoisted(() => ({
   favorites: [] as string[],
   /** Stands in for the buildEnv line of state.json; undefined = composition. */
   buildEnv: undefined as Record<string, string> | undefined,
+  /** The live source the routes installed, so a test can read what a spawn would. */
+  buildEnvSource: undefined as (() => Readonly<Record<string, string>>) | undefined,
   failNext: false,
 }))
 vi.mock('../src/hot.ts', async (importOriginal) => ({
@@ -809,6 +812,7 @@ beforeEach(() => {
   hot.notes = {}
   hot.favorites = []
   hot.buildEnv = undefined
+  hot.buildEnvSource = undefined
   regionProbe.pending = null
   hot.failNext = false
   bed = createTestbed()
@@ -5926,6 +5930,52 @@ describe('build environment (#336)', () => {
     const clear = await bed.dispatch('POST', '/dsh-market/build-env', { buildEnv: {} })
     expect(clear.status).toBe(200)
     expect((await bed.dispatch('GET', '/dsh-market/status')).json.buildEnv).toEqual({})
+  })
+
+  it('drops PATH and CI at the route, and keeps the rest', async () => {
+    // Both are computed by the market for every child (spawnEnv), so a saved
+    // value would silently do nothing — a pinned `PATH` that looks accepted
+    // and changes nothing is worse than a rejection. A round-trip of a CLEAN
+    // map would pass whatever the sanitizer did here (#527 review).
+    const set = await bed.dispatch('POST', '/dsh-market/build-env', {
+      buildEnv: { CC: '/usr/bin/gcc-11', PATH: '/evil/bin', CI: 'false' },
+    })
+    expect(set.status).toBe(200)
+    expect(set.json.buildEnv).toEqual({ CC: '/usr/bin/gcc-11' })
+    expect((await bed.dispatch('GET', '/dsh-market/status')).json.buildEnv).toEqual({ CC: '/usr/bin/gcc-11' })
+  })
+
+  it('drops a key that is not a POSIX name, and a value that is not a string', async () => {
+    const set = await bed.dispatch('POST', '/dsh-market/build-env', {
+      buildEnv: { '1BAD': 'x', 'BAD-NAME': 'x', GOOD: 'kept', NUM: 7, BLANK: '   ' },
+    })
+    expect(set.status).toBe(200)
+    expect(set.json.buildEnv).toEqual({ GOOD: 'kept' })
+  })
+
+  it('hands the spawner a LIVE source, not a copy taken at mount', async () => {
+    // The routes read `config.buildEnv` through a source function that the
+    // spawner calls per child. Freezing that copy at mount would leave every
+    // later spawn on the boot-time value — the edit would look saved (the
+    // card, /status and state.json all agree) and change nothing (#527 review).
+    await bed.dispatch('POST', '/dsh-market/build-env', { buildEnv: { CC: '/usr/bin/gcc-11' } })
+    expect(hot.buildEnvSource?.()).toEqual({ CC: '/usr/bin/gcc-11' })
+    await bed.dispatch('POST', '/dsh-market/build-env', { buildEnv: { CXX: '/usr/bin/g++-11' } })
+    expect(hot.buildEnvSource?.()).toEqual({ CXX: '/usr/bin/g++-11' })
+    // Clearing inherits the composition again rather than freezing the save.
+    await bed.dispatch('POST', '/dsh-market/build-env', { buildEnv: {} })
+    expect(hot.buildEnvSource?.()).toEqual({})
+  })
+
+  it('carries a value of the allowed maximum through the request body', async () => {
+    // The per-value cap is 4 KiB and the default JSON body limit is ALSO
+    // 4 KiB, so a single maximum-length value plus its wrapper could never be
+    // sent: the sanitizer's ceiling has to be smaller than the transport's,
+    // or it means nothing (#527 review).
+    const value = 'x'.repeat(4096)
+    const set = await bed.dispatch('POST', '/dsh-market/build-env', { buildEnv: { LONG: value } })
+    expect(set.status).toBe(200)
+    expect(set.json.buildEnv).toEqual({ LONG: value })
   })
 
   it('a saved buildEnv survives a remount (state is the memory, not the route)', async () => {

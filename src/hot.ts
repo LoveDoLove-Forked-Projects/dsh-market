@@ -374,6 +374,13 @@ const MAX_ENV_VALUE = 4096
  * src/dsh-cli.ts spawnEnv — never this — protects PATH and CI, but a value
  * a user typed for them would silently do nothing there, so it is rejected
  * here with a reason instead.
+ *
+ * `GIT_ASKPASS` and `SSH_ASKPASS` are deliberately NOT rejected, though they
+ * are the two names that can re-open a credential prompt: pointing them at a
+ * program is the supported non-interactive way to answer one, and #587/#596
+ * close the *terminal* fallback (GIT_TERMINAL_PROMPT, BatchMode) rather than
+ * the program one. A user who pins these has already said where the answer
+ * comes from; a user who does not still gets the closed prompt.
  */
 export function buildEnvFromUnknown(value: unknown): Record<string, string> | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined

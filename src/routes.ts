@@ -485,6 +485,10 @@ export function mountMarketRoutes(
     // survive another writer's read-back, which is the whole point of this
     // list (#435).
     marketState.brokenPlugins = fresh.brokenPlugins
+    // Same list, same reason: the build-env route writes this field, and a
+    // writer whose field is not refreshed here reads back the boot-time value
+    // on its next save (#435).
+    marketState.buildEnv = fresh.buildEnv
     setCustomGithubProxy(fresh.githubProxy ?? null)
   }
 
@@ -4442,7 +4446,12 @@ sendJson(response, 200, { updates })
           // POSIX-style; PATH and CI are rejected because the market computes
           // both for its children and a saved value for them would silently
           // do nothing (issue #336; see src/dsh-cli.ts spawnEnv).
-          const body = (await readJsonBody(request)) as { buildEnv?: unknown }
+          // The body limit is this route's own. The default (4 KiB) is the
+          // size of ONE allowed value (MAX_ENV_VALUE), so a map holding a
+          // single maximum-length value plus its JSON wrapper could never be
+          // sent — the sanitizer's cap and the transport's cap have to be
+          // different sizes for either to mean anything (#527 review).
+          const body = (await readJsonBody(request, 256 * 1024)) as { buildEnv?: unknown }
           if (body.buildEnv === null || typeof body.buildEnv !== 'object' || Array.isArray(body.buildEnv)) {
             sendJson(response, 400, {
               error: 'buildEnv must be a KEY/value 对象（空对象表示清除）/ buildEnv must be a KEY/value object (an empty object clears it)',

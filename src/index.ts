@@ -170,6 +170,11 @@ export function apply(ctx: Context, config?: Config): void {
           desktopHost: true,
           allowRestart: false,
           maxSnapshots: config?.maxSnapshots,
+          // The third construction site, and the one #527's review caught
+          // missing: a `buildEnv` configured in cordis.yml was silently
+          // dropped on the official desktop host — the very host the feature
+          // exists for (a GUI launch inherits no shell environment).
+          buildEnv: config?.buildEnv,
           ...(typeof profileContext?.installAnchor === 'string' && isAbsolute(profileContext.installAnchor)
             ? { dshInstallDir: dirname(profileContext.installAnchor) } : {}),
         }
