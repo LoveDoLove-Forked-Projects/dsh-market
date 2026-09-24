@@ -431,27 +431,40 @@ describe('ERR_PNPM_UNEXPECTED_STORE (#244)', () => {
 The dependencies at "C:\\Users\\lenovo\\.dsh\\profiles\\web\\node_modules" are currently linked from the store at "C:\\Users\\lenovo\\.pnpm-store\\v11".
 pnpm now wants to use the store at "C:\\Users\\lenovo\\AppData\\Local\\pnpm\\store\\v11" to link dependencies.`
 
-  it('recognizes it and names BOTH store paths, which is what the user has to act on', () => {
+  it('names BOTH store paths and the durable way to choose between them', () => {
     const failure = classifyPnpmFailure(OUTPUT)
     expect(failure?.code).toBe('unexpected-store')
-    // The linked store comes first: it is the one to pass to --store-dir.
+    // The linked store comes first: it is the one to write into storeDir.
     expect(failure?.message).toContain('C:\\Users\\lenovo\\.pnpm-store\\v11')
     expect(failure?.message).toContain('C:\\Users\\lenovo\\AppData\\Local\\pnpm\\store\\v11')
-    expect(failure?.message).toContain('--store-dir')
+    // The advice is the pin, not the flag (#715). `pnpm install
+    // --store-dir <path>` applies to that one command and leaves the record
+    // in .modules.yaml alone, so the next command fails identically —
+    // measured on pnpm 11.7.0 and by the reporter on 11.22.0. This test used
+    // to require `--store-dir` as the FIX, which is what sent users in a
+    // circle; the string still appears, now saying that it is not one.
+    expect(failure?.message).toContain('pnpm-workspace.yaml')
+    expect(failure?.message).toContain('storeDir')
+    expect(failure?.message).toContain('不是修复')
   })
 
-  it('is NOT marked recoverable — the market must not relink a whole node_modules on a guess', () => {
-    // `recoverable` drives an automatic `pnpm install` retry. On pnpm 11 the
-    // store can only be set by CLI flag, so self-healing would mean adopting
-    // whatever path .modules.yaml names — possibly stale, or on a drive that
-    // is gone — and relinking everything to do it.
+  it('is NOT marked recoverable — a store choice is not the market\'s to make', () => {
+    // `recoverable` drives an automatic `pnpm install` retry. Either choice
+    // has a consequence the user owns: pinning the RECORDED store keeps a
+    // possibly-dead path in use, and adopting the one pnpm now resolves
+    // purges and re-downloads the entire node_modules (pnpm asks for
+    // confirmation, and aborts without a TTY: ERR_PNPM_ABORTED_REMOVE_
+    // MODULES_DIR_NO_TTY, measured). This comment used to justify the same
+    // flag on "the store can only be set by CLI flag" — falsified by #715:
+    // a top-level `storeDir:` in the profile's pnpm-workspace.yaml is
+    // honoured on pnpm 11.
     expect(classifyPnpmFailure(OUTPUT)?.recoverable).toBe(false)
   })
 
   it('still classifies when the paths cannot be parsed, rather than falling through', () => {
     const failure = classifyPnpmFailure('ERR_PNPM_UNEXPECTED_STORE something reworded upstream')
     expect(failure?.code).toBe('unexpected-store')
-    expect(failure?.message).toContain('--store-dir')
+    expect(failure?.message).toContain('storeDir')
   })
 
   const STAGING_OUTPUT = ` ERR_PNPM_UNEXPECTED_STORE  Unexpected store location
@@ -482,7 +495,7 @@ pnpm now wants to use the store at "/Users/panda/Library/pnpm/store/v10" to link
     const live = STAGING_OUTPUT.replace('.generations/staging/1b4f', '.generations/live/1b4f')
     const failure = classifyPnpmFailure(live)
     expect(failure?.code).toBe('unexpected-store')
-    expect(failure?.message).toContain('--store-dir')
+    expect(failure?.message).toContain('storeDir')
     expect(failure?.message).not.toContain('Staging directory')
     expect(failure?.message).not.toContain('暂存目录')
   })
