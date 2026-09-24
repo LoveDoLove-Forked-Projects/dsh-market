@@ -6071,3 +6071,75 @@ describe('favorites (#414)', () => {
     expect(fav.json.favorites).toEqual(['https://github.com/o/dsh-share'])
   })
 })
+
+describe('the way out of a host refusal (#581)', () => {
+  const HOST_PACKUMENT = (versions: Record<string, Record<string, unknown>>): void => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ versions }), { status: 200 }))
+  }
+
+  it('refuses to search for anything the catalog does not carry', async () => {
+    // Not a courtesy: without this the route is an open "read any packument on
+    // npm" proxy for whatever can reach the host.
+    const bad = await bed.dispatch('POST', '/dsh-market/find-compatible', { npmName: 'left-pad' })
+    expect(bad.status).toBe(400)
+    expect(String(bad.json.error)).toContain('not in the curated registry')
+    const invalid = await bed.dispatch('POST', '/dsh-market/find-compatible', { npmName: '../../etc' })
+    expect(invalid.status).toBe(400)
+    const wrongMethod = await bed.dispatch('GET', '/dsh-market/find-compatible')
+    expect(wrongMethod.status).toBe(405)
+    const cross = await bed.dispatch('POST', '/dsh-market/find-compatible', { npmName: 'dsh-loop' }, { crossOrigin: true })
+    expect(cross.status).toBe(403)
+  })
+
+  it('installs the version it found, judged on THAT release', async () => {
+    // The whole point of the pin: without it the install resolves `latest`
+    // again and the compatibility guard refuses the same release twice.
+    fake.npm['dsh-loop'] = {
+      latest: '1.3.0',
+      versions: {
+        '1.2.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+        '1.3.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop', version: '1.2.0' })
+
+    expect(r.status).toBe(200)
+    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([['add', 'dsh-loop@1.2.0']])
+    expect(installedSpec('dsh-loop')).toBe('^1.2.0')
+  })
+
+  it('updates to a pinned compatible release only when it is newer', async () => {
+    fake.npm['dsh-loop'] = {
+      latest: '1.3.0',
+      versions: {
+        '0.9.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+        '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+        '1.2.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+        '1.3.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+    // Installed at 1.0.0 — through the same pin the dialog uses, so the setup
+    // exercises it rather than working around it.
+    await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop', version: '1.0.0' })
+    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([['add', 'dsh-loop@1.0.0']])
+
+    // Older than installed: an update must never be a downgrade (#64).
+    const older = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop', compatVersion: '0.9.0' })
+    expect(older.status).toBe(400)
+    expect(String(older.json.error)).toContain('降级')
+    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([['add', 'dsh-loop@1.0.0']])
+
+    // Exactly what is installed: nothing to do, and not a failure (#495).
+    const same = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop', compatVersion: '1.0.0' })
+    expect(same.status).toBe(200)
+    expect(same.json.skipped).toBe('current')
+    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([['add', 'dsh-loop@1.0.0']])
+
+    // Newer: pinned to THAT release — no `latest` resolution behind it, which
+    // is what makes the refusal dialog's answer actually installable.
+    const newer = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop', compatVersion: '1.2.0' })
+    expect(newer.status).toBe(200)
+    expect(fake.calls.filter(call => call[0] === 'add').at(-1)).toEqual(['add', 'dsh-loop@1.2.0'])
+  })
+})

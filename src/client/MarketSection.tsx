@@ -1450,8 +1450,59 @@ export function MarketSection(props: MarketSectionProps) {
   const [restoreConfirm, setRestoreConfirm] = useState<{ name: string; entry: RegistryPlugin; verified: boolean } | null>(null)
   /** A release whose declared host requirement this host does not meet (#404). kind distinguishes the update dialog from the fresh-install dialog. */
   const [hostIncompatible, setHostIncompatible] = useState<
-    { kind: 'update' | 'install'; name: string; version: string; requirement: string | null; hostVersion: string | null; plugin: RegistryPlugin | null } | null
+    {
+      kind: 'update' | 'install'
+      name: string
+      version: string
+      requirement: string | null
+      hostVersion: string | null
+      /** The npm package the search runs on; null when the entry has no npm name. */
+      npmName: string | null
+      /** Kept for the install path: the card this refusal came from. */
+      plugin: RegistryPlugin | null
+    } | null
   >(null)
+  /**
+   * The answer to "the newest release is too new for this host — what CAN I
+   * install?" (#581). The dialog asks as soon as it opens, because that
+   * question is the only way out it can offer: the alternative the route
+   * gives (install anyway) is a decision about breaking the host, and most
+   * users reaching this dialog have no way to weigh it.
+   */
+  const [findingCompat, setFindingCompat] = useState<
+    { status: 'idle' | 'loading' | 'not-found' | 'error' } | { status: 'found'; version: string }
+  >({ status: 'idle' })
+  const [compatRetry, setCompatRetry] = useState(0)
+  // Ask the moment the dialog opens: "which version still works" is the one
+  // answer that turns a refusal into a choice, and the route can only give it
+  // for a plugin the catalog carries by npm name.
+  useEffect(() => {
+    if (hostIncompatible === null || hostIncompatible.npmName === null) {
+      setFindingCompat({ status: 'idle' })
+      return
+    }
+    const controller = new AbortController()
+    setFindingCompat({ status: 'loading' })
+    fetch(api('/dsh-market/find-compatible'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ npmName: hostIncompatible.npmName, upgradeOnly: hostIncompatible.kind === 'update' }),
+      signal: controller.signal,
+    })
+      .then(async response => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return await response.json() as { compatibleVersion?: string | null }
+      })
+      .then(data => {
+        if (controller.signal.aborted) return
+        setFindingCompat(typeof data.compatibleVersion === 'string' && data.compatibleVersion !== ''
+          ? { status: 'found', version: data.compatibleVersion }
+          : { status: 'not-found' })
+      })
+      .catch(() => { if (!controller.signal.aborted) setFindingCompat({ status: 'error' }) })
+    return () => controller.abort()
+  }, [hostIncompatible, compatRetry])
+
   const [restoreBlocked, setRestoreBlocked] = useState<{ name: string; reason: 'no-catalog' | 'repo-mismatch' } | null>(null)
   // Snapshot the source switch the user agreed to review; later renders must not change it under the dialog.
   const [migrationConfirm, setMigrationConfirm] = useState<SourceMigrationConfirm | null>(null)
@@ -2246,7 +2297,7 @@ export function MarketSection(props: MarketSectionProps) {
     return `${first.name} — ${first.layers.join(' / ')}${rest}`
   }
 
-  const doInstall = useCallback((plugin: RegistryPlugin, force = false) => {
+  const doInstall = useCallback((plugin: RegistryPlugin, force = false, version?: string) => {
     setBuildsSkipped(null)
     setConfirming(null)
     setInstallError(null)
@@ -2262,7 +2313,10 @@ export function MarketSection(props: MarketSectionProps) {
     fetch(api('/dsh-market/install'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: plugin.url, ...(force ? { force: true } : {}) }),
+      // `version` when the refusal dialog found a release this host supports:
+      // the route pins THAT release instead of resolving the newest one —
+      // which is the release that was just refused (#581).
+      body: JSON.stringify({ url: plugin.url, ...(force ? { force: true } : {}), ...(version !== undefined ? { version } : {}) }),
     })
       .then(res => res.json().then(body => ({ status: res.status, body })))
       .then(({ status, body }) => {
@@ -2350,7 +2404,7 @@ export function MarketSection(props: MarketSectionProps) {
           // extended to fresh installs). `input` keeps the record in the
           // panel until the user answers it.
           if (body.hostIncompatible && typeof body.hostIncompatible === 'object') {
-            const notice = body.hostIncompatible as { name?: unknown; version?: unknown; requirement?: unknown; hostVersion?: unknown }
+            const notice = body.hostIncompatible as { name?: unknown; version?: unknown; requirement?: unknown; hostVersion?: unknown; npmName?: unknown }
             setRecords(list => drop(list, recordId))
             setHostIncompatible({
               kind: 'install',
@@ -2358,6 +2412,7 @@ export function MarketSection(props: MarketSectionProps) {
               version: String(notice.version ?? ''),
               requirement: typeof notice.requirement === 'string' ? notice.requirement : null,
               hostVersion: typeof notice.hostVersion === 'string' ? notice.hostVersion : null,
+              npmName: typeof notice.npmName === 'string' ? notice.npmName : (typeof plugin.npm === 'string' ? plugin.npm : null),
               plugin,
             })
             return
@@ -2600,7 +2655,7 @@ export function MarketSection(props: MarketSectionProps) {
       .catch(() => {})
   }, [])
 
-  const doUpdate = useCallback((name: string, force = false, restore = false) => {
+  const doUpdate = useCallback((name: string, force = false, restore = false, compatVersion?: string) => {
     setInstallError(null)
     setActivationWarnings([])
     // Only THIS row's stale marker is cleared. "Update all" walks the list
@@ -2627,7 +2682,7 @@ export function MarketSection(props: MarketSectionProps) {
     return fetch(api('/dsh-market/update'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name, ...(force ? { force: true } : {}), ...(restore ? { restore: true } : {}) }),
+      body: JSON.stringify({ name, ...(force ? { force: true } : {}), ...(restore ? { restore: true } : {}), ...(compatVersion !== undefined ? { compatVersion } : {}) }),
     })
       .then(res => res.json().then(body => ({ status: res.status, body })))
       .then(({ status, body }) => {
@@ -2688,7 +2743,7 @@ export function MarketSection(props: MarketSectionProps) {
           // dialog with the two facts and a way past. The row is dropped
           // rather than marked failed: nothing was attempted.
           if (body.hostIncompatible && typeof body.hostIncompatible === 'object') {
-            const notice = body.hostIncompatible as { name?: unknown; version?: unknown; requirement?: unknown; hostVersion?: unknown }
+            const notice = body.hostIncompatible as { name?: unknown; version?: unknown; requirement?: unknown; hostVersion?: unknown; npmName?: unknown }
             setRecords(list => drop(list, updateRecordId))
             setHostIncompatible({
               kind: 'update',
@@ -2696,6 +2751,7 @@ export function MarketSection(props: MarketSectionProps) {
               version: String(notice.version ?? ''),
               requirement: typeof notice.requirement === 'string' ? notice.requirement : null,
               hostVersion: typeof notice.hostVersion === 'string' ? notice.hostVersion : null,
+              npmName: typeof notice.npmName === 'string' ? notice.npmName : null,
               plugin: null,
             })
             return
@@ -5720,16 +5776,63 @@ export function MarketSection(props: MarketSectionProps) {
           open
           onClose={() => setHostIncompatible(null)}
           title={t('hostIncompatibleTitle')}
-          description={t(hostIncompatible.kind === 'install' ? 'hostIncompatibleBodyInstall' : 'hostIncompatibleBody')
-            .replace('{plugin}', `${hostIncompatible.name} ${hostIncompatible.version}`.trim())
-            .replace('{requirement}', hostIncompatible.requirement ?? t('hostIncompatibleUnknown'))
-            .replace('{host}', hostIncompatible.hostVersion ?? t('hostIncompatibleUnknown'))}
+          description={[
+            t(hostIncompatible.kind === 'install' ? 'hostIncompatibleBodyInstall' : 'hostIncompatibleBody')
+              .replace('{plugin}', `${hostIncompatible.name} ${hostIncompatible.version}`.trim())
+              .replace('{requirement}', hostIncompatible.requirement ?? t('hostIncompatibleUnknown'))
+              .replace('{host}', hostIncompatible.hostVersion ?? t('hostIncompatibleUnknown')),
+            // The way out, said in the same breath as the refusal: what the
+            // user can install instead of a version this host cannot run.
+            hostIncompatible.npmName === null
+              ? null
+              : findingCompat.status === 'loading'
+                ? t('hostIncompatibleSearching')
+                : findingCompat.status === 'found'
+                  ? t(hostIncompatible.kind === 'install' ? 'hostIncompatibleFoundInstall' : 'hostIncompatibleFoundUpdate')
+                      .replace('{version}', findingCompat.version)
+                  : findingCompat.status === 'not-found'
+                    ? t('hostIncompatibleNoCompat')
+                    : findingCompat.status === 'error'
+                      ? t('hostIncompatibleSearchFailed')
+                      : null,
+          ].filter((line): line is string => line !== null).join('\n')}
           footer={(
             <>
               {/* Staying put is the recommended action, so it is the primary
                   one — the opposite of the usual dialog, because here the
                   safe choice is to do nothing. */}
-              <Button variant="primary" onClick={() => setHostIncompatible(null)}>{t(hostIncompatible.kind === 'install' ? 'hostIncompatibleCancel' : 'hostIncompatibleKeep')}</Button>
+              {/* A release this host can actually run is the best outcome
+                  available, so it takes the primary seat — and `stay put`
+                  moves to outline rather than disappearing. The "anyway"
+                  button keeps the ghost seat: it is the only option here
+                  that asks the user to accept a broken host, and it must not
+                  look like the recommended one. */}
+              <Button
+                variant={findingCompat.status === 'found' ? 'outline' : 'primary'}
+                onClick={() => setHostIncompatible(null)}
+              >{t(hostIncompatible.kind === 'install' ? 'hostIncompatibleCancel' : 'hostIncompatibleKeep')}</Button>
+              {findingCompat.status === 'found' && (
+                <Button
+                  variant="primary"
+                  disabled={hostIncompatible.kind === 'install' ? busyUrl !== null : updatingName !== null}
+                  onClick={() => {
+                    const kind = hostIncompatible.kind
+                    const target = hostIncompatible.name
+                    const plugin = hostIncompatible.plugin
+                    const version = findingCompat.version
+                    setHostIncompatible(null)
+                    if (kind === 'install') {
+                      if (plugin !== null) doInstall(plugin, false, version)
+                    } else {
+                      doUpdate(target, false, false, version)
+                    }
+                  }}
+                >{t(hostIncompatible.kind === 'install' ? 'hostIncompatibleInstallCompat' : 'hostIncompatibleUpdateCompat')
+                  .replace('{version}', findingCompat.version)}</Button>
+              )}
+              {findingCompat.status === 'error' && hostIncompatible.npmName !== null && (
+                <Button variant="outline" onClick={() => setCompatRetry(n => n + 1)}>{t('hostIncompatibleRetry')}</Button>
+              )}
               <Button
                 variant="ghost"
                 disabled={hostIncompatible.kind === 'install' ? busyUrl !== null : updatingName !== null}

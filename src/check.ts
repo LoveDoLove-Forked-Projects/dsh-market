@@ -525,6 +525,11 @@ function comparePre(a: string[], b: string[]): number {
 }
 
 /** Compare two semver strings: negative | zero | positive (prerelease < release of same base). */
+/** Whether a string is a well-formed semver `compareSemver` can order. */
+export function isSemver(value: string): boolean {
+  return parseSemver(value) !== null
+}
+
 export function compareSemver(a: string, b: string): number {
   const av = parseSemver(a)
   const bv = parseSemver(b)

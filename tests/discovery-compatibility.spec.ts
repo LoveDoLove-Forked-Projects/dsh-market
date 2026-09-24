@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   deriveHostCompatibility,
   DiscoveryManifestIndex,
+  findCompatibleVersion,
   manifestFacts,
   type NpmManifestFacts,
 } from '../src/discovery-compatibility.ts'
@@ -316,5 +317,68 @@ describe('host-compatibility declaration semantics (Phase 1 additions)', () => {
     expect(result.status).toBe('compatible')
     expect(result.basis).toBe('manifest')
     expect(result.requirement).toBe('>=0.1.0') // only the engine declaration remains
+  })
+})
+
+describe('findCompatibleVersion (#581)', () => {
+  const HOST = '0.1.5-rc.3'
+  const packument = (versions: Record<string, Record<string, unknown>>): typeof fetch =>
+    (async () => new Response(JSON.stringify({ versions }), { status: 200 })) as unknown as typeof fetch
+
+  it('returns the newest release whose own declaration this host satisfies', () => {
+    return expect(findCompatibleVersion(
+      'dsh-loop', HOST, HOST_PACKAGES, 'https://registry.example',
+      packument({
+        '1.0.0': { version: '1.0.0', engines: { dsh: '>=0.1.0' } },
+        '1.1.0': { version: '1.1.0', engines: { dsh: '>=0.1.4' } },
+        '2.0.0': { version: '2.0.0', engines: { dsh: '>=0.1.7' } },
+      }),
+    )).resolves.toBe('1.1.0')
+  })
+
+  it('skips a release whose requirement cannot be judged rather than calling it compatible', () => {
+    // `unknown` is not a small `incompatible`: it is "nobody said". Pinning a
+    // release on the strength of a missing declaration is the guess this
+    // whole check exists to avoid.
+    return expect(findCompatibleVersion(
+      'dsh-loop', HOST, HOST_PACKAGES, 'https://registry.example',
+      packument({
+        '1.0.0': { version: '1.0.0', engines: { dsh: '>=0.1.4' } },
+        // No engine, no lockstep peers, and a peer dependency this host does
+        // not carry at the version declared.
+        '1.1.0': { version: '1.1.0', peerDependencies: { '@deepseek-ai/dsh-tools': '^9.0.0' } },
+      }),
+    )).resolves.toBe('1.0.0')
+  })
+
+  it('honours the floor an update needs, so a downgrade is never offered', () => {
+    return expect(findCompatibleVersion(
+      'dsh-loop', HOST, HOST_PACKAGES, 'https://registry.example',
+      packument({
+        '1.0.0': { version: '1.0.0', engines: { dsh: '>=0.1.0' } },
+        '1.5.0': { version: '1.5.0', engines: { dsh: '>=0.1.4' } },
+        '2.0.0': { version: '2.0.0', engines: { dsh: '>=9.0.0' } },
+      }),
+      '1.5.0',
+    )).resolves.toBeNull()
+  })
+
+  it('orders prereleases properly instead of skipping them', () => {
+    // The host line is often a prerelease and plugins declare against it by
+    // name; skipping prereleases would report "none found" where the answer
+    // exists. Ordering is what keeps a release above its own prereleases.
+    return expect(findCompatibleVersion(
+      'dsh-loop', HOST, HOST_PACKAGES, 'https://registry.example',
+      packument({
+        '1.0.0-rc.1': { version: '1.0.0-rc.1', engines: { dsh: '>=0.1.0' } },
+        '1.0.0': { version: '1.0.0', engines: { dsh: '>=0.1.0' } },
+      }),
+    )).resolves.toBe('1.0.0')
+  })
+
+  it('answers null when the registry cannot be read', () => {
+    const failing = (async () => { throw new Error('offline') }) as unknown as typeof fetch
+    return expect(findCompatibleVersion('dsh-loop', HOST, HOST_PACKAGES, 'https://registry.example', failing))
+      .resolves.toBeNull()
   })
 })

@@ -11,7 +11,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { satisfiesRange } from './check.ts'
+import { compareSemver, isSemver, satisfiesRange } from './check.ts'
 import { classifyPeer } from './compatibility.ts'
 import { marketFetch } from './net.ts'
 
@@ -340,4 +340,61 @@ export class DiscoveryManifestIndex {
     }
     return result
   }
+}
+
+/**
+ * The newest release of `npmName` whose own declarations this host satisfies.
+ *
+ * The answer to "the newest version is too new for this host — what CAN I
+ * install?" (#581), which the refusal dialog used to answer with nothing.
+ *
+ * Only a CONFIRMED `compatible` verdict from {@link deriveHostCompatibility}
+ * passes. `unknown` — no declaration, or a host version nobody can read — is
+ * skipped rather than offered: pinning a release as "compatible" on the
+ * strength of a missing field would be the same guess this whole check exists
+ * to avoid.
+ *
+ * Prereleases are included, and ordered properly (a release outranks its own
+ * prereleases): in this ecosystem the host line is often a prerelease, and
+ * plugins declare against it by name — skipping them would report "none
+ * found" where the fix exists.
+ *
+ * `minimumVersionExclusive` restricts the search to releases NEWER than the
+ * installed one, which is what an update needs: suggesting a downgrade is not
+ * an update.
+ *
+ * @returns the version, or null when the packument cannot be read or nothing
+ *   in the history declares itself compatible.
+ */
+export async function findCompatibleVersion(
+  npmName: string,
+  hostVersion: string,
+  hostPackages: ReadonlySet<string>,
+  registry: string,
+  fetcher: FetchLike = marketFetch,
+  minimumVersionExclusive: string | null = null,
+): Promise<string | null> {
+  let doc: unknown
+  try {
+    const res = await fetcher(
+      `${registry}/${encodeURIComponent(npmName)}`,
+      { signal: AbortSignal.timeout(15_000), headers: { accept: 'application/json', 'user-agent': 'dsh-market' } },
+    )
+    if (!res.ok) return null
+    doc = await res.json()
+  } catch {
+    return null
+  }
+  const versions = record(record(doc)?.versions)
+  if (versions === null) return null
+  const candidates = Object.keys(versions)
+    .filter(version => isSemver(version)
+      && (minimumVersionExclusive === null || compareSemver(version, minimumVersionExclusive) > 0))
+    .sort((left, right) => compareSemver(right, left))
+  for (const version of candidates) {
+    if (deriveHostCompatibility(manifestFacts(versions[version]), hostVersion, hostPackages).status === 'compatible') {
+      return version
+    }
+  }
+  return null
 }

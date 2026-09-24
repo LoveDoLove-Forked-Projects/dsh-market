@@ -21,7 +21,7 @@ import {
 } from './hot.ts'
 import { createGroup, deleteGroup, removeFromGroups, renameGroup, setGroupMembers } from './groups.ts'
 import { dshHostInfo, findDshInstallDir } from './dsh-install.ts'
-import { deriveHostCompatibility, DiscoveryManifestIndex } from './discovery-compatibility.ts'
+import { deriveHostCompatibility, DiscoveryManifestIndex, findCompatibleVersion } from './discovery-compatibility.ts'
 import { configurePersistentLog, exportLogs, logEvent, readPersistentLog } from './log.ts'
 import { marketFetch } from './net.ts'
 import { diagnosePackageManifests } from './diagnostics.ts'
@@ -2006,6 +2006,67 @@ export function mountMarketRoutes(
 
     host.webServer.register({
       kind: 'exact',
+      path: '/dsh-market/find-compatible',
+      handler: async (request, response) => {
+        if (request.method !== 'POST') {
+          response.writeHead(405, { allow: 'POST' })
+          response.end()
+          return
+        }
+        if (!sameOrigin(request)) {
+          sendJson(response, 403, { error: 'untrusted origin' })
+          return
+        }
+        try {
+          const body = (await readJsonBody(request)) as { npmName?: unknown; upgradeOnly?: unknown }
+          const npmName = typeof body.npmName === 'string' ? body.npmName : ''
+          const upgradeOnly = body.upgradeOnly === true
+          if (!NPM_NAME_RE.test(npmName)) {
+            sendJson(response, 400, { error: 'invalid npm package name' })
+            return
+          }
+          // Curated-catalog membership is required, not a courtesy: without it
+          // this route would be an open "read any packument on npm" proxy for
+          // whatever can reach the host, and the market only ever searches for
+          // a plugin it is showing the user anyway.
+          const registry = await loadRegistry()
+          if (!registry.plugins.some(plugin => plugin.npm === npmName)) {
+            sendJson(response, 400, { error: 'package is not in the curated registry' })
+            return
+          }
+          const host = dshHostInfo()
+          if (host?.version == null) {
+            sendJson(response, 200, { compatibleVersion: null, reason: 'host-version-unknown' })
+            return
+          }
+          // An update searches only NEWER releases: the newest compatible one
+          // must not be the version already installed, and offering a
+          // downgrade as an "update" is how a user ends up with an older
+          // plugin than they started with.
+          const currentVersion = upgradeOnly ? readInstalledVersion(config.profile, npmName, activeProfileDir) : null
+          if (upgradeOnly && currentVersion === null) {
+            sendJson(response, 200, { compatibleVersion: null, reason: 'installed-version-unknown' })
+            return
+          }
+          const compatibleVersion = await findCompatibleVersion(
+            npmName,
+            host.version,
+            corePackageNames(host.directory ?? null),
+            routesFor(region).npmRegistry,
+            undefined,
+            currentVersion,
+          )
+          logEvent('info', 'find-compatible',
+            `${npmName}: host=${host.version}, after=${currentVersion ?? 'none'} → ${compatibleVersion ?? 'none'}`)
+          sendJson(response, 200, { compatibleVersion, currentVersion, upgradeOnly })
+        } catch (error) {
+          sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+
+    host.webServer.register({
+      kind: 'exact',
       path: '/dsh-market/installed',
       handler: async (request, response) => {
         if (request.method !== 'GET') {
@@ -3224,9 +3285,15 @@ sendJson(response, 200, { updates })
         }
         try {
           await withMutationLock(response, 'install', async () => {
-            const body = (await readJsonBody(request)) as { name?: unknown; force?: unknown; restore?: unknown }
+            const body = (await readJsonBody(request)) as { name?: unknown; force?: unknown; restore?: unknown; compatVersion?: unknown }
             const name = typeof body.name === 'string' ? body.name : ''
             const force = body.force === true
+            // A release the refusal dialog's own search confirmed compatible
+            // (#581). Pinned below instead of resolving `latest` again —
+            // which is the same release that was just refused.
+            const compatVersion = typeof body.compatVersion === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(body.compatVersion)
+              ? body.compatVersion
+              : null
             const restore = body.restore === true
             const manifestCapture = captureUpdateManifest()
             if (!manifestCapture.ok) {
@@ -3375,10 +3442,33 @@ sendJson(response, 200, { updates })
             // failure with a name.
             if (usesNpmUpdateTarget) {
               const installedVersion = readInstalledVersion(config.profile, name, activeProfileDir)
-              const registryLatest = selfChannel === null
+              // The requested release replaces the resolved one, and with it
+              // every check below that exists to judge `latest`: re-running
+              // them would refuse the version the dialog just found, in a loop
+              // with the user in it. The ONE judgement kept is direction —
+              // a compatible release can legitimately be older than what is
+              // installed, and an update must never be a downgrade (#64).
+              if (compatVersion !== null) {
+                const direction = installedVersion === null ? null : compareVersions(compatVersion, installedVersion)
+                if (direction === 0) {
+                  logEvent('info', 'update', `${name} already at the requested ${compatVersion}; nothing to do`)
+                  invalidateUpdates()
+                  sendJson(response, 200, { ok: true, skipped: 'current', name, version: installedVersion })
+                  return
+                }
+                if (direction !== null && direction < 0) {
+                  logEvent('info', 'update', `${name} refused: the compatible release ${compatVersion} is older than installed=${installedVersion}`)
+                  sendJson(response, 400, {
+                    error: `无法用这个版本更新：它为当前 DSH 兼容，但 ${compatVersion} 比已装的 ${installedVersion} 更旧，更新会降级，已停止。 / That version cannot update this plugin: ${compatVersion} is compatible with this host but older than the installed ${installedVersion}, so it would be a downgrade. Nothing was changed.`,
+                  })
+                  return
+                }
+                expectedNpmVersion = compatVersion
+              }
+              const registryLatest = compatVersion ?? (selfChannel === null
                 ? await fetchNpmLatest(name)
-                : await versionOnChannel(name, selfChannel, await fetchNpmLatest(name))
-              expectedNpmVersion = registryLatest
+                : await versionOnChannel(name, selfChannel, await fetchNpmLatest(name)))
+              if (compatVersion === null) expectedNpmVersion = registryLatest
               // Never let `@latest` walk a profile BACKWARDS (#64 by @ZeroOrigin64):
               // a package whose latest dist-tag was left on an older release turns
               // this update into a downgrade that also rewrites an exact pin to
@@ -4856,7 +4946,7 @@ sendJson(response, 200, { updates })
         }
         try {
           await withMutationLock(response, 'install', async () => {
-            const body = (await readJsonBody(request)) as { url?: unknown; force?: unknown }
+            const body = (await readJsonBody(request)) as { url?: unknown; force?: unknown; version?: unknown }
             const force = body.force === true
             const busyAgents = runningAgentsForGuard()
             if (busyAgents.length > 0) {
@@ -4869,6 +4959,12 @@ sendJson(response, 200, { updates })
               return
             }
             const url = typeof body.url === 'string' ? body.url : ''
+            // A release the user picked from the refusal dialog's own search
+            // (#581): it was confirmed compatible by /dsh-market/find-compatible,
+            // so it is pinned below instead of resolving `latest` again.
+            const requestedVersion = typeof body.version === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(body.version)
+              ? body.version
+              : null
             const registry = await loadRegistry()
             const entry = registry.plugins.find(p => p.url.toLowerCase() === url.toLowerCase())
             if (entry === undefined) {
@@ -4900,9 +4996,11 @@ sendJson(response, 200, { updates })
             // be read keeps the bare name too: the old behaviour, never a
             // refused install.
             const registryLatest = NPM_NAME_RE.test(plainTarget) ? await fetchNpmLatest(plainTarget) : null
-            const pinnedTarget = registryLatest !== null && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(registryLatest)
-              ? `${plainTarget}@${registryLatest}`
-              : plainTarget
+            const pinnedTarget = requestedVersion !== null && NPM_NAME_RE.test(plainTarget)
+              ? `${plainTarget}@${requestedVersion}`
+              : registryLatest !== null && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(registryLatest)
+                ? `${plainTarget}@${registryLatest}`
+                : plainTarget
             if (pinnedTarget !== plainTarget) {
               logEvent('info', 'install', `${entry.name}: pinned to the registry's latest, ${registryLatest}, so pnpm's fresh-release hold cannot substitute an older version silently`)
             }
@@ -4994,7 +5092,10 @@ sendJson(response, 200, { updates })
             // (absence of a claim is not a verdict). force is the escape
             // hatch for a bundled host that misreports its version.
             const npmName = typeof entry.npm === 'string' && NPM_NAME_RE.test(entry.npm) ? entry.npm : null
-            if (npmName !== null && await refuseHostIncompatible(npmName, entry.name, null, force, response, region, 'install-compat')) return
+            // Judged on the release being installed: passing null here would
+            // re-read `latest`'s manifest and refuse the very version the
+            // dialog just found for this host — a loop with the user in it.
+            if (npmName !== null && await refuseHostIncompatible(npmName, entry.name, requestedVersion, force, response, region, 'install-compat')) return
             const beforeSpecs = readInstalled(config.profile, activeProfileDir)
             const before = new Set(Object.keys(beforeSpecs))
             if (retryAlias !== null) before.delete(retryAlias)

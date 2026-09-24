@@ -709,6 +709,55 @@ describe('MarketSection (jsdom)', () => {
     })
   })
 
+  it('offers the newest release this host supports, and installs THAT one (#581)', async () => {
+    let installs = 0
+    stubFetch({
+      '/dsh-market/install': () => {
+        installs += 1
+        return installs === 1
+          ? { __status: 400, hostIncompatible: { name: 'dsh-loop', npmName: 'dsh-loop', version: '2.0.0', requirement: '>=0.1.7', hostVersion: '0.1.5-rc.3' } }
+          : { ok: true, hot: false }
+      },
+      '/dsh-market/find-compatible': { compatibleVersion: '1.2.0', upgradeOnly: false },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getAllByRole('button', { name: en.install })[0])
+    fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+
+    // The refusal states the way out in the same breath: a version that
+    // declares this host, named on the button that acts on it.
+    // A regex: the dialog's description carries the refusal AND the way out
+    // in one text node, so an exact-string matcher can never see the second
+    // line on its own.
+    await screen.findByText(/You can install 1\.2\.0/)
+    fireEvent.click(screen.getByRole('button', { name: en.hostIncompatibleInstallCompat.replace('{version}', '1.2.0') }))
+
+    await waitFor(() => {
+      const posts = fetchCalls.filter(call => call.path === '/dsh-market/install')
+      expect(posts.length).toBe(2)
+      // Pinned to the version that was found, and NOT forced: the user took
+      // the safe road, and the route judges the release it is given.
+      expect(posts[1]?.body).toMatchObject({ version: '1.2.0' })
+      expect((posts[1]?.body as { force?: boolean }).force).toBeUndefined()
+    })
+  })
+
+  it('says so when nothing declares this host, instead of offering a dead end (#581)', async () => {
+    stubFetch({
+      '/dsh-market/install': { __status: 400, hostIncompatible: { name: 'dsh-loop', npmName: 'dsh-loop', version: '2.0.0', requirement: '>=0.1.7', hostVersion: '0.1.5-rc.3' } },
+      '/dsh-market/find-compatible': { compatibleVersion: null, upgradeOnly: false },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getAllByRole('button', { name: en.install })[0])
+    fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+
+    await screen.findByText(/No version declares support for this DSH/)
+    // The gamble is still there, and still the ghost of the three.
+    expect(screen.getByRole('button', { name: en.hostIncompatibleInstallAnyway })).toBeTruthy()
+  })
+
   it('export log is a real button with visible feedback (#84)', async () => {
     stubFetch({ '/dsh-market/logs': 'log-lines' })
     render(<MarketSection {...props()} />)
