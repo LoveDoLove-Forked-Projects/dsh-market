@@ -1217,6 +1217,41 @@ function sameInstalledMap(left: InstalledMap, right: InstalledMap): boolean {
   return names.length === Object.keys(right).length && names.every(name => left[name] === right[name])
 }
 
+/**
+ * Whether one installed plugin has a pending update (either an ordinary
+ * upgrade via npm/git/restore, or a host-managed generation release), and has
+ * not already been updated in the current session.
+ *
+ * THE answer to that question. It used to have three copies that disagreed —
+ * the reminder count, the card's pill, and the installed list's ordering —
+ * which is the shape this repository already paid for once
+ * (`src/entry-identity.ts`: one assumption, several copies, each fixed at a
+ * different time). Callers now pass the two things that are genuinely their
+ * own policy:
+ *
+ * - `ignored`: a session-level "ignore this update" (#657). The NOTICE
+ *   surfaces pass it — the badge and the ordering, because a row the user
+ *   dismissed should not keep jumping to the top or counting toward
+ *   attention. The row's own pill does NOT, because the pill answers "is
+ *   there an update" (which dismissing does not change) and the row shows the
+ *   dismissal right beside it.
+ * - whether a disabled plugin counts, which the reminder count says no to and
+ *   the list says yes to: a disabled row is still a row someone may want to
+ *   update from the list, but it is not asking for attention.
+ */
+function isPluginUpdatable(
+  name: string,
+  spec: string,
+  status: UpdateStatus | undefined,
+  updatedNames: readonly string[],
+  ignored: ReadonlySet<string> = new Set<string>(),
+): boolean {
+  if (updatedNames.includes(name) || ignored.has(name) || status === undefined) return false
+  if (status.updateAvailable === true) return true
+  const generation = status.kind === 'generation' || isGenerationSpec(spec)
+  return generation && status.latest != null
+}
+
 /** Sort field choices in the filter panel. */
 const SORT_FIELD_OPTIONS: ReadonlyArray<{ key: SortField; label: string }> = [
   { key: 'downloads', label: 'sortDownloads' },
@@ -3547,10 +3582,8 @@ export function MarketSection(props: MarketSectionProps) {
   const selfName = installed['dshmarket'] !== undefined ? 'dshmarket' : 'dsh-market'
   const updatableNames = Object.keys(installed).filter(
     name => name !== selfName
-      && !updatedNames.includes(name)
       && !effectiveDisabledSet.has(name)
-      && updates[name]
-      && updates[name].updateAvailable,
+      && isPluginUpdatable(name, String(installed[name]), updates[name], updatedNames),
   )
   // Replacing a local source with its catalog source is deliberately not a
   // batch update: every such plugin has an existing, explicit confirmation
@@ -3829,6 +3862,31 @@ export function MarketSection(props: MarketSectionProps) {
   const showHostPending = hostPendingNames.length > 0 && !restartNoticeDismissed && sessionPendingRestart === 0
   const pendingRestart = sessionPendingRestart > 0 ? sessionPendingRestart : (showHostPending ? hostPendingNames.length : 0)
   const displayedInstalled = pendingBackup === null ? installed : { ...pendingDependencies, ...installed }
+  /**
+   * Installed entries ordered for the list view.
+   *
+   * The order settles once and then holds, so rows never reshuffle under a
+   * pointer that is already aiming at one (#631). The single moment that has
+   * to reorder is when the update check lands: `/installed` is a local read
+   * and `/updates` is a network probe over every package, so the list is
+   * always rendered BEFORE the answer exists — freezing on the view alone
+   * would leave it in manifest order forever. `updatesLoaded` is therefore
+   * the one part of `updates` allowed in, as a boolean: it flips once when
+   * the result arrives, and every later change (a newer check, a row the user
+   * just updated) leaves the boolean and the order alone.
+   */
+  const isInstalledListActive = tab === 'installed' && installedView === 'list'
+  const updatesLoaded = Object.keys(updates).length > 0
+  const orderedInstalledEntries = useMemo(() => {
+    return Object.entries(displayedInstalled)
+      .filter(([name]) => name !== selfName)
+      .sort(([nameA, specA], [nameB, specB]) => {
+        const aUp = isPluginUpdatable(nameA, String(specA), updates[nameA], updatedNames, ignoredUpdateSet) ? 1 : 0
+        const bUp = isPluginUpdatable(nameB, String(specB), updates[nameB], updatedNames, ignoredUpdateSet) ? 1 : 0
+        return bUp - aUp
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `updatesLoaded` stands in for `updates`/`updatedNames`: reorder when the check lands, then hold (#631)
+  }, [isInstalledListActive, displayedInstalled, selfName, updatesLoaded])
   const missingRestoreCount = Object.keys(pendingDependencies).filter(name => !installedFiles.includes(name)).length
   // Self-update lives in the header button and the settings card, not this
   // tab's row list (the market itself is filtered out below) — so a pending
@@ -5396,15 +5454,12 @@ export function MarketSection(props: MarketSectionProps) {
                             <p className={css.groupOrgHint}>{t('groupOrgHint')}</p>
                           </>
                         )
-                      : Object.keys(displayedInstalled).filter(name => name !== selfName).length === 0
+                      : orderedInstalledEntries.length === 0
                         ? <div className={css.empty}>{t('installedEmpty')}</div>
                         : (
                           <Masonry
-                            items={Object.entries(displayedInstalled)
+                            items={orderedInstalledEntries
                             .filter(([name, spec]) => {
-                              // The market manages itself from its own settings
-                              // card, not as a row in this list (#188-adjacent).
-                              if (name === selfName) return false
                               const needle = qInstalled.trim().toLowerCase()
                               if (needle === '') return true
                               if (name.toLowerCase().includes(needle)) return true
@@ -5541,7 +5596,7 @@ export function MarketSection(props: MarketSectionProps) {
                                       one quiet line in the flow the row already
                                       reserves for conditional content, so rows
                                       without it are pixel-identical to before. */}
-                                  {status !== undefined && (status.updateAvailable || (generation && status.latest != null)) && (
+                                  {isPluginUpdatable(name, String(spec), status, []) && (
                                     <div className={css.noteRow}>
                                       <button
                                         type="button"

@@ -8,7 +8,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarketSection, OwnerAvatar, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
 import { SEARCH_DELAY_MS } from '../../src/client/SearchInput.tsx'
@@ -2981,6 +2981,120 @@ describe('installed masonry layout (#273)', () => {
     // that would actually break if the single-column path regressed.
     expect([...columns[0]!.querySelectorAll('[class*="irowNameText"]')].map(row => row.textContent?.trim()))
       .toEqual(['alpha', 'beta', 'gamma', 'delta'])
+  })
+
+  it('prioritizes updatable plugins at the top of the installed list', async () => {
+    const media = {
+      matches: false,
+      media: '(min-width: 681px)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    }
+    vi.stubGlobal('matchMedia', vi.fn(() => media))
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web',
+        installed: { alpha: '^1.0.0', beta: '^1.0.0', gamma: '^1.0.0', delta: '^1.0.0' },
+        live: [],
+      },
+      '/dsh-market/updates': {
+        updates: {
+          gamma: { kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '2.0.0', updateAvailable: true },
+        },
+      },
+    })
+    const { container } = render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    await screen.findByText('gamma')
+
+    const columns = [...container.querySelectorAll('[class*="masonryCol"]')] as HTMLElement[]
+    expect([...columns[0]!.querySelectorAll('[class*="irowNameText"]')].map(row => row.textContent?.trim()))
+      .toEqual(['gamma', 'alpha', 'beta', 'delta'])
+  })
+
+  it('reorders once when the update check lands, then holds (#631)', async () => {
+    const media = {
+      matches: false,
+      media: '(min-width: 681px)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    }
+    vi.stubGlobal('matchMedia', vi.fn(() => media))
+
+    // `/installed` is a local read; `/updates` probes every package over the
+    // network. The list is therefore ALWAYS painted before the update answer
+    // exists, and holding an order fixed against that answer would leave the
+    // feature permanently inert. This gate reproduces that ordering exactly:
+    // the first updates request stays pending until the test releases it.
+    const installedMapFixture = { alpha: '^1.0.0', beta: '^1.0.0', gamma: '^1.0.0', delta: '^1.0.0' }
+    const baseFetch = stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web',
+        installed: installedMapFixture,
+        live: [],
+      },
+      // Status must agree with the installed listing. When it disagrees, the
+      // poll calls refreshInstalled(), which hands `installed` a fresh
+      // identity and re-runs the ordering memo for a reason that has nothing
+      // to do with this behaviour — masking the very freeze under test.
+      '/dsh-market/status': { active: false, pnpm: true, boot: 'boot-1', restart: true, installed: installedMapFixture },
+    })
+    let releaseUpdates: () => void = () => {}
+    const updatesGate = new Promise<void>(resolve => { releaseUpdates = resolve })
+    let firstUpdates = true
+    vi.stubGlobal('fetch', vi.fn((input: unknown, init?: RequestInit) => {
+      const path = String(input).split('?')[0]
+      if (path === '/dsh-market/updates' && firstUpdates) {
+        firstUpdates = false
+        return updatesGate.then(() => new Response(JSON.stringify({
+          updates: { gamma: { kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '2.0.0', updateAvailable: true } },
+        }), { status: 200 }))
+      }
+      return baseFetch(input, init)
+    }))
+
+    const { container } = render(<MarketSection {...props()} preferredSubsectionId="installed" />)
+    await screen.findByText('delta')
+
+    const names = () => [...container.querySelectorAll('[class*="masonryCol"] [class*="irowNameText"]')]
+      .map(row => row.textContent?.trim())
+    // Painted before the check answers: manifest order, no sorting invented.
+    expect(names()).toEqual(['alpha', 'beta', 'gamma', 'delta'])
+
+    // The check lands — this is the one moment the order is allowed to move.
+    // Flushed with `act`, NOT `waitFor`: waiting lets the 2s status poll fire,
+    // and a poll can hand `installed` a fresh identity, which re-runs the memo
+    // for an unrelated reason and would let this test pass without the fix.
+    await act(async () => { releaseUpdates() })
+    await act(async () => {})
+    expect(names()).toEqual(['gamma', 'alpha', 'beta', 'delta'])
+
+    // ...and then it holds. A filter round trip must not reshuffle rows.
+    const searchInput = screen.getByPlaceholderText(en.searchPh)
+    fireEvent.change(searchInput, { target: { value: 'a' } })
+    fireEvent.change(searchInput, { target: { value: '' } })
+    expect(names()).toEqual(['gamma', 'alpha', 'beta', 'delta'])
+
+    // Dismissing the update must not reshuffle them either. `ignoredUpdateSet`
+    // sits deliberately OUTSIDE the ordering's dependencies: a dismissed row
+    // keeps its place rather than sliding down under a pointer that is already
+    // aiming at the row below. (The other inputs are the reason a second
+    // `/updates` payload is not asserted here: every path that refetches one
+    // also hands `installed` a fresh identity — the poll does it through
+    // `refreshInstalled()` — so that case would report the memo re-running for
+    // an unrelated reason, not the freeze under test.)
+    fireEvent.click(screen.getByRole('button', { name: `${en.ignoreUpdateNotice} gamma` }))
+    await act(async () => {})
+    expect(names()).toEqual(['gamma', 'alpha', 'beta', 'delta'])
   })
 })
 

@@ -7122,6 +7122,33 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			const names = Object.keys(left);
 			return names.length === Object.keys(right).length && names.every((name) => left[name] === right[name]);
 		}
+		/**
+		* Whether one installed plugin has a pending update (either an ordinary
+		* upgrade via npm/git/restore, or a host-managed generation release), and has
+		* not already been updated in the current session.
+		*
+		* THE answer to that question. It used to have three copies that disagreed —
+		* the reminder count, the card's pill, and the installed list's ordering —
+		* which is the shape this repository already paid for once
+		* (`src/entry-identity.ts`: one assumption, several copies, each fixed at a
+		* different time). Callers now pass the two things that are genuinely their
+		* own policy:
+		*
+		* - `ignored`: a session-level "ignore this update" (#657). The NOTICE
+		*   surfaces pass it — the badge and the ordering, because a row the user
+		*   dismissed should not keep jumping to the top or counting toward
+		*   attention. The row's own pill does NOT, because the pill answers "is
+		*   there an update" (which dismissing does not change) and the row shows the
+		*   dismissal right beside it.
+		* - whether a disabled plugin counts, which the reminder count says no to and
+		*   the list says yes to: a disabled row is still a row someone may want to
+		*   update from the list, but it is not asking for attention.
+		*/
+		function isPluginUpdatable(name, spec, status, updatedNames, ignored = /* @__PURE__ */ new Set()) {
+			if (updatedNames.includes(name) || ignored.has(name) || status === void 0) return false;
+			if (status.updateAvailable === true) return true;
+			return (status.kind === "generation" || isGenerationSpec(spec)) && status.latest != null;
+		}
 		/** Sort field choices in the filter panel. */
 		const SORT_FIELD_OPTIONS = [
 			{
@@ -9312,7 +9339,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				});
 			}, []);
 			const selfName = installed["dshmarket"] !== void 0 ? "dshmarket" : "dsh-market";
-			const updatableNames = Object.keys(installed).filter((name) => name !== selfName && !updatedNames.includes(name) && !effectiveDisabledSet.has(name) && updates[name] && updates[name].updateAvailable);
+			const updatableNames = Object.keys(installed).filter((name) => name !== selfName && !effectiveDisabledSet.has(name) && isPluginUpdatable(name, String(installed[name]), updates[name], updatedNames));
 			const batchUpdatableNames = updatableNames.filter((name) => updates[name]?.restoreRequired !== true);
 			const ignoredUpdateSet = (0, react.useMemo)(() => new Set(ignoredUpdateNames), [ignoredUpdateNames]);
 			const reminderUpdatableNames = updatableNames.filter((name) => !ignoredUpdateSet.has(name));
@@ -9578,6 +9605,32 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				...pendingDependencies,
 				...installed
 			};
+			/**
+			* Installed entries ordered for the list view.
+			*
+			* The order settles once and then holds, so rows never reshuffle under a
+			* pointer that is already aiming at one (#631). The single moment that has
+			* to reorder is when the update check lands: `/installed` is a local read
+			* and `/updates` is a network probe over every package, so the list is
+			* always rendered BEFORE the answer exists — freezing on the view alone
+			* would leave it in manifest order forever. `updatesLoaded` is therefore
+			* the one part of `updates` allowed in, as a boolean: it flips once when
+			* the result arrives, and every later change (a newer check, a row the user
+			* just updated) leaves the boolean and the order alone.
+			*/
+			const isInstalledListActive = tab === "installed" && installedView === "list";
+			const updatesLoaded = Object.keys(updates).length > 0;
+			const orderedInstalledEntries = (0, react.useMemo)(() => {
+				return Object.entries(displayedInstalled).filter(([name]) => name !== selfName).sort(([nameA, specA], [nameB, specB]) => {
+					const aUp = isPluginUpdatable(nameA, String(specA), updates[nameA], updatedNames, ignoredUpdateSet) ? 1 : 0;
+					return (isPluginUpdatable(nameB, String(specB), updates[nameB], updatedNames, ignoredUpdateSet) ? 1 : 0) - aUp;
+				});
+			}, [
+				isInstalledListActive,
+				displayedInstalled,
+				selfName,
+				updatesLoaded
+			]);
 			const missingRestoreCount = Object.keys(pendingDependencies).filter((name) => !installedFiles.includes(name)).length;
 			const hasUpdates = reminderUpdatableNames.length > 0;
 			/** Live status line: structured phase, or the human-line fallback. */
@@ -11515,12 +11568,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 									className: Market_module_css_default.groupOrgHint,
 									children: t("groupOrgHint")
 								})
-							] }) : Object.keys(displayedInstalled).filter((name) => name !== selfName).length === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							] }) : orderedInstalledEntries.length === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 								className: Market_module_css_default.empty,
 								children: t("installedEmpty")
 							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Masonry, {
-								items: Object.entries(displayedInstalled).filter(([name, spec]) => {
-									if (name === selfName) return false;
+								items: orderedInstalledEntries.filter(([name, spec]) => {
 									const needle = qInstalled.trim().toLowerCase();
 									if (needle === "") return true;
 									if (name.toLowerCase().includes(needle)) return true;
@@ -11658,7 +11710,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 														]
 													});
 												})(),
-												status !== void 0 && (status.updateAvailable || generation && status.latest != null) && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+												isPluginUpdatable(name, String(spec), status, []) && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 													className: Market_module_css_default.noteRow,
 													children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 														type: "button",
