@@ -40,6 +40,22 @@ export interface RegistryPlugin {
   deprecated?: boolean
   /** Catalog name of the suggested replacement plugin, when deprecated. */
   replacement?: string
+  /**
+   * Capability disclosure (#401): what a static scan of the artifact a user
+   * would install reported touching — `shell`, `network`, `credentials`,
+   * `fs-read`, `fs-write`, `env`, `llm`, `dynamic-code`, ...
+   *
+   * Disclosure, not a verdict, and the type says so by being ABSENT when the
+   * entry was never scanned: `capabilities: []` means "scanned, nothing
+   * detected" and `undefined` means "we could not look". The two render
+   * differently (未检出 vs 未扫描) because they are different sentences, and
+   * only one of them is a statement about the plugin.
+   */
+  capabilities?: string[]
+  /** Combinations a reader should look at, in the scanner's own words. */
+  capabilityRedLines?: string[]
+  /** When the scan behind those fields ran (ISO 8601). */
+  capabilityCheckedAt?: string | null
 }
 
 /**

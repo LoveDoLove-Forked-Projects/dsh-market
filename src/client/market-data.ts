@@ -62,6 +62,16 @@ export interface RegistryPlugin {
   deprecated?: boolean
   /** Catalog name of the suggested replacement plugin, when deprecated. */
   replacement?: string
+  /**
+   * Capability disclosure (#401), scanned at catalog build time from the
+   * artifact a user would install. ABSENT means "never scanned" and `[]`
+   * means "scanned, nothing detected" — the card renders those two as
+   * different sentences (未扫描 / 未检出), because only one of them is a
+   * statement about the plugin. Never a verdict: see `capabilityNote`.
+   */
+  capabilities?: string[]
+  capabilityRedLines?: string[]
+  capabilityCheckedAt?: string | null
   /** Author-curated screenshot URLs from the registry (#61); optional. */
   screenshots?: string[]
 }

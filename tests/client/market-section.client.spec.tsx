@@ -3371,6 +3371,94 @@ describe('search clear controls (#524)', () => {
   })
 })
 
+describe('capability disclosure (#401)', () => {
+  /**
+   * Facts on the card, never a badge: what the scanner detected is listed,
+   * what it did not detect is said in the scanner's own terms, and an entry
+   * nobody looked at says so instead of looking clean. The three states are
+   * the point of these tests — a single "no chips" rendering would make
+   * "nothing found" and "never scanned" the same card.
+   */
+  const base = {
+    name: 'dsh-probe-target', owner: 'alice', url: 'https://github.com/alice/dsh-probe-target',
+    category: 'tools', npm: null, stars: 1, added: '2026-09-01',
+    description: { en: 'Target', zh: '目标' }, install: '',
+  }
+
+  function withEntry(extra: Record<string, unknown>): void {
+    const plugins = [{ ...base, ...extra }]
+    stubFetch({
+      '/dsh-market/registry': { source: 'live', hostVersion: '0.1.2-alpha.2', registry: { ...REGISTRY, count: plugins.length, plugins } },
+    })
+  }
+
+  it('lists what was detected, and names the red line in the reader language', async () => {
+    withEntry({
+      capabilities: ['shell', 'fs-write', 'network', 'credentials'],
+      capabilityRedLines: ['reads credentials/secrets AND has network access'],
+      capabilityCheckedAt: '2026-09-24T12:00:00Z',
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-probe-target')
+    expect(screen.getByText(en.capabilityTitle)).toBeTruthy()
+    expect(screen.getByText(en.capShell)).toBeTruthy()
+    expect(screen.getByText(en.capFsWrite)).toBeTruthy()
+    expect(screen.getByText(en.capNetwork)).toBeTruthy()
+    expect(screen.getByText(en.capCredentials)).toBeTruthy()
+    // The one loud element on the card.
+    expect(screen.getByText(en.capabilityRedLine.replace('{0}', en.capRedCredentialsNetwork))).toBeTruthy()
+    // …and never the words that would turn disclosure into a verdict.
+    expect(screen.queryByText(/safe/i)).toBeNull()
+  })
+
+  it('says the blind spots out loud, next to the chips', async () => {
+    // The copy is load-bearing: a scan that cannot see node_modules,
+    // runtime-assembled URLs or dynamic imports must not read as clearance.
+    withEntry({ capabilities: [], capabilityRedLines: [] })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-probe-target')
+    expect(en.capabilityNote).toContain('not “safe”')
+    expect(en.capabilityNote).toContain('node_modules')
+    expect(zh.capabilityNote).toContain('不等于安全')
+  })
+
+  it('separates "nothing detected" from "never scanned"', async () => {
+    withEntry({ capabilities: [], capabilityRedLines: [] })
+    const { unmount } = render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-probe-target')
+    expect(screen.getByText(en.capabilityNone)).toBeTruthy()
+    expect(screen.queryByText(en.capabilityUnchecked)).toBeNull()
+    unmount()
+
+    // No fields at all: the catalog never scanned this entry. Same absence,
+    // different sentence — this one is about us, not about the plugin.
+    withEntry({})
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-probe-target')
+    expect(screen.getByText(en.capabilityUnchecked)).toBeTruthy()
+    expect(screen.queryByText(en.capabilityNone)).toBeNull()
+  })
+
+  it('shows a capability name this build has no label for, rather than dropping it', async () => {
+    // The scanner's vocabulary can grow between releases (`dynamic-code` did).
+    // A chip that vanished because the label was missing would read as "does
+    // not do that" — the one failure mode a disclosure must not have. A name
+    // WITH a label is translated; one without shows as itself.
+    withEntry({ capabilities: ['dynamic-code', 'writes-clipboard'], capabilityRedLines: [] })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-probe-target')
+    expect(screen.getByText(en.capDynamicCode)).toBeTruthy()
+    expect(screen.getByText('writes-clipboard')).toBeTruthy()
+  })
+
+  it('leaves a red line it cannot translate in the scanner own words', async () => {
+    withEntry({ capabilities: ['network'], capabilityRedLines: ['POSTs telemetry to a collector'] })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-probe-target')
+    expect(screen.getByText(en.capabilityRedLine.replace('{0}', 'POSTs telemetry to a collector'))).toBeTruthy()
+  })
+})
+
 describe('per-tab search boxes', () => {
   it('the installed tab has its own search that narrows the list', async () => {
     stubFetch({

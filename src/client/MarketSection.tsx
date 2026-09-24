@@ -3635,6 +3635,34 @@ export function MarketSection(props: MarketSectionProps) {
     )
   }
 
+  /**
+   * Chip label for one capability name, or the scanner's own name.
+   *
+   * `network` has a label; a name this build has never seen (`dynamic-code`
+   * arrived after the first integration) shows as itself rather than
+   * disappearing — an unlabelled fact is still a fact, and a missing chip
+   * would read as "does not do that".
+   */
+  const capabilityLabel = (name: string): string => {
+    const key = 'cap' + name.split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('')
+    const label = t(key)
+    return label === key ? name : label
+  }
+
+  /**
+   * The scanner's red-line sentences, translated where this build knows them.
+   *
+   * A sentence it does not know stays in the scanner's language on purpose: a
+   * mistranslation of a security fact is worse than a foreign word, and the
+   * line is the one thing on the card a reader must not misread.
+   */
+  const redLineLabel = (line: string): string => {
+    if (line === 'reads credentials/secrets AND has network access') return t('capRedCredentialsNetwork')
+    const plaintext = /^uses plaintext http:\/\/ to (.+)$/.exec(line)
+    if (plaintext !== null) return t('capRedPlaintextHttp').replace('{0}', plaintext[1]!)
+    return line
+  }
+
   const pluginCard = (p: RegistryPlugin) => {
     const desc = (p.description && (p.description[lang] || p.description.en)) || ''
     const done = doneUrls.includes(p.url) || hotUrls.includes(p.url)
@@ -3733,6 +3761,24 @@ export function MarketSection(props: MarketSectionProps) {
             </div>
           </div>
         )}
+        {/* Capability disclosure (#401): facts on the card, never a badge.
+            Three states, because they are three different sentences —
+            capabilities detected, nothing detected, and never looked at. */}
+        <div className={css.caps}>
+          <Tooltip label={t('capabilityNote')} side="top">
+            <span className={css.capsTitle}>{t('capabilityTitle')}</span>
+          </Tooltip>
+          {p.capabilityRedLines?.map(line => (
+            <span key={line} className={css.capRed}>{t('capabilityRedLine').replace('{0}', redLineLabel(line))}</span>
+          ))}
+          {p.capabilities === undefined
+            ? <span className={css.capMuted} data-state="unchecked">{t('capabilityUnchecked')}</span>
+            : p.capabilities.length === 0
+              ? <span className={css.capMuted} data-state="none">{t('capabilityNone')}</span>
+              : p.capabilities.map(name => (
+                  <span key={name} className={css.capChip}>{capabilityLabel(name)}</span>
+                ))}
+        </div>
         <div className={css.foot}>
           <div className={css.footTags}>
             <span

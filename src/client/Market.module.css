@@ -593,6 +593,14 @@
 .irow button{white-space:nowrap;flex-shrink:0}
 .tabSearchRow{display:flex;align-items:center;gap:8px;padding:0 4px 12px}
 .tabSearch{flex:1;min-width:0}
+/* Capability disclosure (#401). Quiet by design: these are facts beside the
+   install button, not a warning banner — the one loud element is a red line,
+   and it borrows the warning colour rather than inventing a severity scale. */
+.caps{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:0 2px 6px;font-size:11px;line-height:1.5;min-width:0}
+.capsTitle{color:var(--dsw-alias-label-secondary,#8b949e);cursor:help}
+.capChip{border:1px solid var(--dsw-alias-border-l2,#30363d);border-radius:999px;padding:0 6px;color:var(--dsw-alias-label-primary,#c9d1d9);white-space:nowrap}
+.capMuted{border:1px dashed var(--dsw-alias-border-l2,#30363d);border-radius:999px;padding:0 6px;color:var(--dsw-alias-label-secondary,#8b949e);white-space:nowrap}
+.capRed{color:var(--dsw-alias-state-warn-primary,#d29922);white-space:normal;overflow-wrap:anywhere}
 .searchField{position:relative;min-width:0;box-sizing:border-box}
 /* The primitives' Input applies className to its padded OUTER span, not the
    native input, so the reserved space for the clear button belongs here and
