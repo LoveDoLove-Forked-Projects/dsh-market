@@ -78,6 +78,8 @@ Installs prefer repo-verified npm packages, then author-supplied prebuilt GitHub
       allowRestart: false   # NOT at the top level beside `name:`
   ```
 
+  **On dsh 0.1.7 and newer there is no switch to flip**: the host derives a plugin's settings from its own Config schema and no longer serves a plugin-registered settings namespace, so the market has no control there. The profile patch below is the way on every host.
+
   `GET /dsh-market/status` reports `"restart": false` once it has taken effect.
 - For terminal-attached launches, the detached replacement keeps running after the original terminal closes
 - Listing ≠ endorsement: plugins are third-party code, install sources you trust

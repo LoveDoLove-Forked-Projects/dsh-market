@@ -75,6 +75,8 @@ dsh plugin --profile web add dshmarket
       allowRestart: false   # 不要和 `name:` 并排写在顶层
   ```
 
+  **dsh 0.1.7 及更新版本上没有这个开关可关**：宿主改为从插件自己的 Config schema 派生设置，不再为插件注册的设置命名空间提供服务，市场在那里没有可用的控件。用下面的 profile patch，它在所有宿主上都有效。
+
   生效后 `GET /dsh-market/status` 会返回 `"restart": false`。
 - 从终端启动时，替代进程脱离原终端，关闭原终端后仍会继续运行
 - 收录 ≠ 背书:插件是第三方代码,请只安装你信任的来源
