@@ -6273,3 +6273,77 @@ describe('the way out of a host refusal (#581)', () => {
     expect(fake.calls.filter(call => call[0] === 'add').at(-1)).toEqual(['add', 'dsh-loop@1.2.0'])
   })
 })
+
+describe('a pinned install is judged on its own release, not on latest (#581)', () => {
+  // The guard needs a host version to compare against, and the bed has none:
+  // without one the pre-flight check passes everything by design. The same
+  // report-derived Desktop fixture the #553 tests use gives it one.
+  const HOST_VERSION = '0.1.0-rc.12'
+  const resourcesDescriptor = Object.getOwnPropertyDescriptor(process, 'resourcesPath')
+  beforeEach(() => {
+    const app = join(home, 'resources', 'app')
+    mkdirSync(app, { recursive: true })
+    writeFileSync(join(app, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-desktop', version: HOST_VERSION }))
+    // Every runtime witness the host detector corroborates against, or the
+    // version reads 'unknown' and the guard passes everything by design.
+    for (const name of ['dsh-base', 'dsh-web-app', 'dsh-web', 'dsh-settings']) {
+      const dir = join(app, 'node_modules', '@deepseek-ai', name)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: `@deepseek-ai/${name}`, version: HOST_VERSION }))
+    }
+    Object.defineProperty(process, 'resourcesPath', { value: join(home, 'resources'), configurable: true })
+  })
+  afterEach(() => {
+    if (resourcesDescriptor === undefined) delete (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    else Object.defineProperty(process, 'resourcesPath', resourcesDescriptor)
+  })
+
+  /** Registry answers by URL suffix; anything else goes to the bed's own stub. */
+  function stubManifests(answers: Record<string, unknown>): void {
+    const previous = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn((input: unknown, init?: RequestInit) => {
+      const url = String(input)
+      for (const [suffix, body] of Object.entries(answers)) {
+        if (url.endsWith(suffix)) return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
+      }
+      return previous(input as string, init)
+    }))
+  }
+
+  const manifest = (version: string, dsh: string) => ({
+    name: 'dsh-loop', version, engines: { dsh }, 'dist-tags': { latest: version },
+  })
+
+  it('installs the release the dialog resolved even when latest is incompatible', async () => {
+    // The reported case: the market finds 1.0.0 for this host, the user
+    // accepts, and the pre-flight check reads `latest` — which wants a host
+    // this one is not — refusing the install of the very version it had just
+    // recommended. The verdict has to be about the release being installed.
+    expect((await bed.dispatch('GET', '/dsh-market/registry')).json.hostVersion).toBe(HOST_VERSION)
+    fake.npm['dsh-loop'] = { latest: '2.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
+    stubManifests({
+      '/dsh-loop/latest': manifest('2.0.0', '>=99.0.0'),
+      '/dsh-loop/1.0.0': manifest('1.0.0', `>=${HOST_VERSION}`),
+    })
+
+    const installed = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop', version: '1.0.0' })
+    expect(installed.status, JSON.stringify(installed.json)).toBe(200)
+    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([['add', 'dsh-loop@1.0.0']])
+  })
+
+  it('refuses a pinned release that is itself incompatible, whatever latest says', async () => {
+    // The other direction, which nothing covered before: `latest` suits this
+    // host, the pinned older release does not. A `latest`-based verdict passes
+    // it and the plugin breaks the host on the next boot.
+    fake.npm['dsh-loop'] = { latest: '2.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
+    stubManifests({
+      '/dsh-loop/latest': manifest('2.0.0', `>=${HOST_VERSION}`),
+      '/dsh-loop/1.0.0': manifest('1.0.0', '>=99.0.0'),
+    })
+
+    const refused = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop', version: '1.0.0' })
+    expect(refused.status).toBe(400)
+    expect(refused.json.hostIncompatible).toMatchObject({ version: '1.0.0', requirement: '>=99.0.0' })
+    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([])
+  })
+})

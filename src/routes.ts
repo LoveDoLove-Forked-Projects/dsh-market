@@ -1488,7 +1488,17 @@ export function mountMarketRoutes(
     // failed pre-flight left a failure cooldown behind, and a successful one
     // pinned the version being installed, so the panel answered "unknown" or
     // the wrong version for a package it had never actually asked about.
-    const facts = (await discoveryManifests.lookup([npmName], routesFor(region).npmRegistry, { record: false }))[npmName] ?? null
+    // Judge the release being installed, not `latest` (#581): a `latest` read
+    // refuses the very version the compatibility dialog just resolved for this
+    // host, and it would equally pass a pinned release that is itself
+    // incompatible. `registryLatest` is fetched once here because the index
+    // answer is also what tells us whether the pin IS the latest release — in
+    // which case there is nothing extra to ask for.
+    const registry = routesFor(region).npmRegistry
+    const latest = (await discoveryManifests.lookup([npmName], registry, { record: false }))[npmName] ?? null
+    const facts = version === null || latest?.version === version
+      ? latest
+      : await discoveryManifests.lookupVersion(npmName, version, registry)
     const verdict = deriveHostCompatibility(
       facts,
       host?.version ?? null,

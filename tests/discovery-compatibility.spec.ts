@@ -382,3 +382,93 @@ describe('findCompatibleVersion (#581)', () => {
       .resolves.toBeNull()
   })
 })
+
+describe('lookupVersion', () => {
+  // The outer `directories` list belongs to another describe; this one cleans
+  // up after itself.
+  const temporary: string[] = []
+  afterEach(() => {
+    for (const directory of temporary.splice(0)) rmSync(directory, { recursive: true, force: true })
+  })
+
+  /** A cache path of its own, removed after the test. */
+  function tempCache(): string {
+    const directory = mkdtempSync(join(tmpdir(), 'dshm-discovery-'))
+    temporary.push(directory)
+    return join(directory, '.dsh-market', 'discovery.json')
+  }
+
+  function indexWith(fetcher: (url: string) => Promise<Response>, now = 1_000, cache = tempCache()): DiscoveryManifestIndex {
+    return new DiscoveryManifestIndex(cache, { fetcher, now: () => now })
+  }
+
+  it('asks the registry for the named release, not for latest', async () => {
+    // The install route judges the release it is about to install (#581): a
+    // `latest` read refuses the compatible older release the dialog just
+    // resolved, so the URL itself is the behaviour under test.
+    const urls: string[] = []
+    const index = indexWith(async (url) => {
+      urls.push(url)
+      return new Response(JSON.stringify({ version: '1.0.0', engines: { dsh: '>=0.1.0' } }), { status: 200 })
+    })
+
+    expect(await index.lookupVersion('plugin-a', '1.0.0', 'https://registry.example'))
+      .toEqual({ version: '1.0.0', enginesDsh: '>=0.1.0', peerDependencies: {} })
+    expect(urls).toEqual(['https://registry.example/plugin-a/1.0.0'])
+  })
+
+  it('encodes a scoped name and a version npm would reject raw', async () => {
+    const urls: string[] = []
+    const index = indexWith(async (url) => {
+      urls.push(url)
+      return new Response(JSON.stringify({ version: '1.0.0' }), { status: 200 })
+    })
+
+    await index.lookupVersion('@scope/plugin', '1.0.0+build.7', 'https://registry.example')
+    expect(urls).toEqual(['https://registry.example/%40scope%2Fplugin/1.0.0%2Bbuild.7'])
+  })
+
+  it('stays out of the index, its cache and its failure bookkeeping', async () => {
+    // Three reasons, all load-bearing: a version-keyed cache would grow with
+    // every release anyone pinned to answer a once-per-install question; a
+    // successful version lookup must not become the package's cached facts,
+    // because the index answers a DIFFERENT question (latest); and a
+    // pre-flight verdict must not decide what the diagnostics panel sees next
+    // (#619), so even an unreadable release leaves no failure cooldown.
+    const urls: string[] = []
+    const cache = tempCache()
+    const index = indexWith(async (url) => {
+      urls.push(url)
+      if (url.endsWith('/does-not-exist')) return new Response('{"error":"not found"}', { status: 404 })
+      return new Response(JSON.stringify({ version: url.endsWith('/1.0.0') ? '1.0.0' : '2.0.0' }), { status: 200 })
+    }, 1_000, cache)
+
+    expect((await index.lookupVersion('plugin-a', '1.0.0', 'https://registry.example'))?.version).toBe('1.0.0')
+    expect(await index.lookupVersion('plugin-a', 'does-not-exist', 'https://registry.example')).toBeNull()
+    // The `latest` lookup still goes to the network — nothing was cached for
+    // this package, and the 404 left no cooldown behind.
+    const latest = await index.lookup(['plugin-a'], 'https://registry.example')
+    expect(latest['plugin-a']?.version).toBe('2.0.0')
+    expect(urls).toEqual([
+      'https://registry.example/plugin-a/1.0.0',
+      'https://registry.example/plugin-a/does-not-exist',
+      'https://registry.example/plugin-a/latest',
+    ])
+
+    // And the durable cache holds the `latest` facts under the package's name,
+    // not the pinned release's.
+    const again = indexWith(async () => { throw new Error('the durable cache should answer') }, 1_001, cache)
+    expect((await again.lookup(['plugin-a'], 'https://registry.example'))['plugin-a']?.version).toBe('2.0.0')
+  })
+
+  it('answers null, not a verdict, when the release cannot be read', async () => {
+    const offline = indexWith(async () => { throw new Error('offline') })
+    expect(await offline.lookupVersion('plugin-a', '1.0.0', 'https://registry.example')).toBeNull()
+
+    const missing = indexWith(async () => new Response('nope', { status: 500 }))
+    expect(await missing.lookupVersion('plugin-a', '1.0.0', 'https://registry.example')).toBeNull()
+
+    const malformed = indexWith(async () => new Response('not json', { status: 200 }))
+    expect(await malformed.lookupVersion('plugin-a', '1.0.0', 'https://registry.example')).toBeNull()
+  })
+})

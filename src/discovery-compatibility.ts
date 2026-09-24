@@ -310,6 +310,42 @@ export class DiscoveryManifestIndex {
   }
 
   /**
+   * Facts for ONE named release, rather than for `latest`.
+   *
+   * The install and update routes can name the release they are about to
+   * install — the compatibility dialog resolves one for this host (#581), and
+   * the update route resolves the channel's target — and judging those
+   * against `latest` is wrong in both directions: it refuses the compatible
+   * older release the dialog just found for this host (because the newest
+   * release declares a range this host misses), and it would equally pass a
+   * pinned release that is itself incompatible.
+   *
+   * Deliberately outside the cache. The index is keyed by package name, and a
+   * version-keyed one would grow with every release anyone ever pinned to
+   * answer a question asked once per install. Nothing is recorded either: a
+   * pre-flight verdict must not decide what the diagnostics panel sees next
+   * (#619).
+   *
+   * A release whose manifest cannot be read is `null`, like every other
+   * unreadable manifest: absence of a claim is not a verdict.
+   */
+  async lookupVersion(name: string, version: string, registry: string): Promise<NpmManifestFacts | null> {
+    try {
+      const response = await this.withFetchPermit(async () => await this.fetcher(
+        `${registry}/${encodeURIComponent(name)}/${encodeURIComponent(version)}`,
+        {
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+          headers: { accept: 'application/json', 'user-agent': 'dsh-market' },
+        },
+      ))
+      if (!response.ok) return null
+      return manifestFacts(await response.json())
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * Look up a bounded batch while never exceeding the configured fan-out.
    *
    * `record: false` answers the caller from the cache or the network but
