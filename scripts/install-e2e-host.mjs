@@ -54,13 +54,27 @@ const OVERRIDES = {
   '@deepseek-ai/cordis-plugin-hmr': '1.0.16',
 }
 
+/**
+ * The CLI lines whose own cordis plugins need to be pinned.
+ *
+ * The breakage is in what the OLD CLIs resolve: their caret ranges float onto
+ * plugin versions their `dsh-app-boot` cannot boot (#684). 0.1.7 declares its
+ * own ranges (`cordis-plugin-loader: ~1.0.5`) and boots as declared —
+ * measured, and the full lane is green on it — so pinning it would make CI
+ * test a composition no user gets, on the line where "what users run" matters
+ * most. Anything not listed here installs as published; a future line that
+ * needs pins will say so by going red.
+ */
+const NEEDS_OVERRIDES = new Set(['0.1.0-rc.8', '0.1.2-alpha.2'])
+const pinned = NEEDS_OVERRIDES.has(version)
+
 const root = join(process.env.RUNNER_TEMP ?? tmpdir(), 'dsh-e2e-host')
 rmSync(root, { recursive: true, force: true })
 mkdirSync(root, { recursive: true })
 writeFileSync(join(root, 'package.json'), JSON.stringify({
   private: true,
   dependencies: { '@deepseek-ai/dsh': version },
-  pnpm: { overrides: OVERRIDES },
+  ...(pinned ? { pnpm: { overrides: OVERRIDES } } : {}),
 }, null, 2))
 writeFileSync(join(root, '.npmrc'), 'node-linker=hoisted\n')
 // The overrides go in the WORKSPACE file as well, because pnpm 10 moved its
@@ -80,8 +94,9 @@ writeFileSync(join(root, 'pnpm-workspace.yaml'), [
   'packages:',
   '  - .',
   'strictDepBuilds: false',
-  'overrides:',
-  ...Object.entries(OVERRIDES).map(([name, version]) => `  '${name}': ${version}`),
+  // Only when this line needs pinning, for the same reason the package.json
+  // copy is conditional: a pin is a deviation from what users get.
+  ...(pinned ? ['overrides:', ...Object.entries(OVERRIDES).map(([name, v]) => `  '${name}': ${v}`)] : []),
   '',
 ].join('\n'))
 
@@ -95,4 +110,4 @@ if (install.status !== 0) process.exit(install.status ?? 1)
 
 const bin = join(root, 'node_modules', '.bin')
 if (process.env.GITHUB_PATH) appendFileSync(process.env.GITHUB_PATH, `${bin}\n`)
-console.log(`dsh ${version} installed at ${root} with ${JSON.stringify(OVERRIDES)}; ${bin} is on PATH for later steps`)
+console.log(`dsh ${version} installed at ${root} ${pinned ? `with ${JSON.stringify(OVERRIDES)}` : 'as published (this line pins nothing)'}; ${bin} is on PATH for later steps`)

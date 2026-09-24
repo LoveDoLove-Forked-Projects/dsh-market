@@ -110,13 +110,25 @@ jobs:
         # nothing in CI could see it, because CI only ever ran the released
         # line. A plugin that can stop the host from starting has to be
         # caught before the alpha becomes `latest`.
-        dsh: ['0.1.0-rc.8', '0.1.2-alpha.2']
+        # 0.1.7 is the next line, and it is the one that changed the most
+        # under this plugin: it moved a plugin's own configuration onto its
+        # bundle's page in the sidebar's Plugins page and derives settings
+        # from a Config schema instead of a plugin-registered namespace
+        # (#677). Both of those are exercised here now — the settings card
+        # registers into `plugins.bundle.config` and the spec asserts it at
+        # that seat — which is exactly the kind of change nothing in CI could
+        # see back when the alpha broke the host's boot.
+        dsh: ['0.1.0-rc.8', '0.1.2-alpha.2', '0.1.7-rc.1']
         exclude:
           # Host-API breakage is platform-independent, and Windows web-e2e is
-          # the slowest job in the matrix (~8 min). Running the alpha on Linux
-          # alone catches the class without doubling the critical path.
+          # the slowest job in the matrix (~8 min). Running the newer lines on
+          # Linux alone catches the class without doubling the critical path;
+          # the released line still runs on both, because the install chain
+          # itself is where Windows differs.
           - os: windows-latest
             dsh: '0.1.2-alpha.2'
+          - os: windows-latest
+            dsh: '0.1.7-rc.1'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -133,11 +145,13 @@ jobs:
       # flaky "dsh boot timeout" (and, on longer specs, an hours-long stuck
       # job) with nothing wrong in this repo's own code. rc.8 added
       # `--no-open`, which tests/web/scaffold.ts now passes.
-      # Not `npm install -g`: the CLI is pinned but its cordis plugins float,
-      # and since 2026-09-22 the newest of them no longer boot (#684). The
-      # script installs the host under npm `overrides`, which a global install
-      # ignores, and puts it on PATH. See the script for the bisect. It uses
-      # the pnpm set up above.
+      # Not `npm install -g`: the older CLIs pin only themselves while their
+      # cordis plugins float, and since 2026-09-22 the newest of them no
+      # longer boot (#684). The script installs the host under `overrides`,
+      # which a global install ignores, and puts it on PATH — for the lines
+      # that need it: 0.1.7 declares its own ranges and installs as published,
+      # so CI tests the composition its users get. See the script for the
+      # bisect.
       - run: node scripts/install-e2e-host.mjs ${{ matrix.dsh }}
       # --with-deps installs system libraries and is Linux-only.
       - run: npx playwright install --with-deps chromium
