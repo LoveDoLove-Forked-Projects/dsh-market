@@ -382,6 +382,12 @@ export const zh = {
   toggleFail: '切换失败',
   deprecatedBadge: '已废弃',
   deprecatedWarn: '该插件已被目录标记为废弃，不建议新用户安装。',
+  // A plugin the market had to stop declaring (#663). Plain about what
+  // happened, because the user's plugin is simply gone from the list and
+  // nothing else in the UI can explain that.
+  brokenPluginTitle: '{0} 更新失败后被移除了',
+  brokenPluginBody: '更新被运行中的 DSH 挡住了，而更新前的版本也已经损坏。市场把它从 profile 里移除，是为了让下一次启动不卡在组装这一步。插件目录还在原处，退出 DSH 之后重新安装它即可。',
+  brokenPluginAction: '去找这个插件',
   viewReplacement: '查看替代品',
   installReplacement: '安装替代品',
   replacementHint: '目录建议改用',
@@ -980,6 +986,9 @@ export const en: Record<MarketKey, string> = {
   toggleFail: 'Toggle failed',
   deprecatedBadge: 'Deprecated',
   deprecatedWarn: 'This plugin is marked as deprecated by the catalog; new users are advised against installing it.',
+  brokenPluginTitle: '{0} was removed after a failed update',
+  brokenPluginBody: 'The running DSH blocked the update, and the version it was replacing was already damaged. The market removed it from the profile so the next start does not fail while composing. Its directory is untouched — quit DSH and install it again.',
+  brokenPluginAction: 'Find this plugin',
   viewReplacement: 'View replacement',
   installReplacement: 'Install replacement',
   replacementHint: 'Catalog suggests',

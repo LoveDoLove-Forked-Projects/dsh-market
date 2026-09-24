@@ -801,6 +801,14 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true })
 })
 
+/** The profile manifest as it is on disk right now. */
+function readManifestAt(profileDir: string): {
+  dependencies?: Record<string, string>
+  dsh?: { profile?: { bundles?: string[] } }
+} {
+  return JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as ReturnType<typeof readManifestAt>
+}
+
 function installedSpec(name: string): string | undefined {
   const manifest = JSON.parse(readFileSync(join(profileDir('web'), 'package.json'), 'utf8'))
   return manifest.dependencies?.[name]
@@ -1740,12 +1748,18 @@ describe('update flow — no npm publishing required', () => {
     expect(readFileSync(join(fake.profileDir, 'pnpm-lock.yaml'), 'utf8')).toBe(lockBefore)
     const installed = JSON.parse(readFileSync(join(fake.profileDir, 'node_modules', 'dsh-loop', 'package.json'), 'utf8')) as { version?: string }
     expect(installed.version).toBe('1.0.0')
+    // A build worth keeping is kept: nothing is dropped from the profile.
+    // This is the boundary the next test crosses.
+    expect(readManifestAt(fake.profileDir).dependencies?.['dsh-loop']).toBe(specBefore)
   })
 
-  it('says so when the refused swap already took the previous entry file, instead of a rollback that cannot run (#608)', async () => {
+  it('stops declaring a plugin the next boot cannot compose, instead of leaving it to find out (#663)', async () => {
     advanceNpmLatest('1.2.0')
     const specBefore = installedSpec('dsh-loop')
     fake.hostHoldsOpen = { name: 'dsh-loop', cleared: ['lib/index.js'] }
+    // The plugin is a bundle too, so the failure has both declarations to
+    // drop — the pair that made the reporter's desktop window unopenable.
+    fake.profileBundleOnNextAdd = 'dsh-loop'
     const callsBefore = fake.calls.length
 
     const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
@@ -1753,10 +1767,53 @@ describe('update flow — no npm publishing required', () => {
     expect(r.status).toBe(502)
     expect(r.json.ok).toBe(false)
     expect(fake.calls.slice(callsBefore).filter(call => call[0] === 'add')).toHaveLength(1)
-    expect(String(r.json.error)).toContain('could not be fully restored')
-    expect(String(r.json.error)).toContain('previous build is incomplete')
-    expect(String(r.json.error)).not.toContain('inspect this profile')
-    expect(installedSpec('dsh-loop')).toBe(specBefore)
+    // The failure is still reported as such, and the previous build is still
+    // the thing we could not keep.
+    expect(r.json.removedDeclaration).toMatchObject({
+      name: 'dsh-loop', spec: specBefore, reason: 'incomplete-build-locked',
+    })
+    expect(String(r.json.error)).toContain('dsh.profile.bundles')
+    expect(String(r.json.error)).toContain('重新安装')
+    // THE assertion: profile composition stats declared packages'
+    // package.json, and this directory no longer has one. Declared is what
+    // killed the next start, so no longer declared is the fix.
+    const manifest = readManifestAt(fake.profileDir)
+    expect(manifest.dependencies?.['dsh-loop']).toBeUndefined()
+    expect(manifest.dsh?.profile?.bundles ?? []).not.toContain('dsh-loop')
+    // ...and the directory itself is untouched. Nothing here can rename or
+    // delete it: that is the same operation pnpm was just refused, because
+    // the plugin's own process holds the directory open (measured EBUSY on
+    // the emptied directory, #663).
+    expect(existsSync(join(fake.profileDir, 'node_modules', 'dsh-loop'))).toBe(true)
+    // The record outlives the reply: the plugin is gone from the installed
+    // list, so /status is the only place left that can say why.
+    const listed = await bed.dispatch('GET', '/dsh-market/installed')
+    expect(listed.json.brokenPlugins['dsh-loop']).toMatchObject({ spec: specBefore, reason: 'incomplete-build-locked' })
+    expect(Object.keys(listed.json.installed)).not.toContain('dsh-loop')
+    const logs = await bed.dispatch('GET', '/dsh-market/logs')
+    expect(logs.text).toContain('update-removed-declaration')
+  })
+
+  it('forgets the removed declaration once the plugin is installed again (#663)', async () => {
+    advanceNpmLatest('1.2.0')
+    fake.npm['dsh-loop'] = {
+      latest: '1.2.0',
+      versions: {
+        '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+        '1.2.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+    fake.hostHoldsOpen = { name: 'dsh-loop', cleared: ['lib/index.js'] }
+    await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+    expect((await bed.dispatch('GET', '/dsh-market/installed')).json.brokenPlugins['dsh-loop']).toBeDefined()
+
+    fake.hostHoldsOpen = null
+    const reinstalled = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    expect(reinstalled.json).toMatchObject({ ok: true })
+    // Absent, not merely empty: the notice is driven by the key existing.
+    expect((await bed.dispatch('GET', '/dsh-market/installed')).json.brokenPlugins['dsh-loop']).toBeUndefined()
+    expect(readManifestAt(fake.profileDir).dependencies?.['dsh-loop']).toBeDefined()
   })
 
   it('flags the update and applies it', async () => {

@@ -442,6 +442,10 @@ export function mountMarketRoutes(
     marketState.regionAuto = fresh.regionAuto
     marketState.favorites = fresh.favorites
     marketState.githubProxy = fresh.githubProxy
+    // Refreshed like the rest: a declaration this route dropped (#663) must
+    // survive another writer's read-back, which is the whole point of this
+    // list (#435).
+    marketState.brokenPlugins = fresh.brokenPlugins
     setCustomGithubProxy(fresh.githubProxy ?? null)
   }
 
@@ -1148,6 +1152,25 @@ export function mountMarketRoutes(
    * profile's node_modules (#316), and reimplementing that resolution here
    * would call those orphans.
    */
+  /**
+   * The plugin is declared and loadable again, so the record of the failure
+   * that made the market drop its declaration is spent (#663).
+   *
+   * Cleared explicitly on a successful install/update rather than filtered
+   * out when the notice is rendered: a predicate that hides the entry when
+   * the package reappears cannot tell "reinstalled and working" from
+   * "declared again by hand and still broken", and the silent direction is
+   * the wrong one for a message whose job is to explain an absence.
+   */
+  function clearBrokenPlugin(name: string): void {
+    if (marketState.brokenPlugins?.[name] === undefined) return
+    const next = { ...marketState.brokenPlugins }
+    delete next[name]
+    marketState.brokenPlugins = Object.keys(next).length > 0 ? next : undefined
+    writeMarketState(activeProfileDir, marketState)
+    logEvent('info', 'update-reinstalled', `${name}: installed again — the removed-declaration notice for it is cleared`)
+  }
+
   function orphanBundles(): string[] {
     try {
       return analyzeActiveProfile().bundles
@@ -2043,6 +2066,12 @@ export function mountMarketRoutes(
           patch: { disables: patch.disables, forced: patch.forced, inserts: patch.inserts },
           patchDisabled: patchFlags.disabled,
           unbundled,
+          // Packages the market had to stop declaring (#663). Read here, with
+          // the installed list itself, because that is the refresh every
+          // install and update already triggers: the notice appears on the
+          // failure that caused it, and goes away on the reinstall that ends
+          // it, without a page load in between.
+          brokenPlugins: marketState.brokenPlugins ?? {},
           patchForced: patchFlags.forced,
           bundles: readProfileBundles(activeProfileDir).filter(name => !INBOX_BUNDLES.has(name)),
         })
@@ -3566,6 +3595,11 @@ sendJson(response, 200, { updates })
             let rollbackOk = true
             let rollbackDetail: string | null = null
             let hardFailureRollbackError: string | null = null
+            // Set when this failure made the market drop the plugin's own
+            // declaration (#663). The client needs it in the ANSWER as well as
+            // in state.json: the notice has to appear on the failure the user
+            // is looking at, not only after a reload.
+            let removedDeclaration: { name: string; spec: string; reason: 'incomplete-build-locked' } | null = null
             // A non-zero exit or timeout can happen after pnpm has replaced
             // both package.json and node_modules. Restoring the manifest alone
             // leaves the rejected build running after restart. Reinstall the
@@ -3588,16 +3622,64 @@ sendJson(response, 200, { updates })
             // rather than assumed: pnpm clears as much of the target directory
             // as it can before retrying the rename, so files beside the locked
             // one can already be gone.
-            const keepLockedBuild = (): { ok: boolean; detail: string | null } => {
+            const keepLockedBuild = (): { ok: boolean; detail: string | null; missingEntry: boolean } => {
               restoreProfileManifest(config.profile, manifestBefore, activeProfileDir)
               const lock = lockfileCapture.ok
                 ? restoreProfileLockfile(lockfileCapture.snapshot)
                 : { ok: false, detail: lockfileCapture.detail }
-              if (!lock.ok) return lock
+              if (!lock.ok) return { ...lock, missingEntry: false }
               if (!hasLoadableEntry(activeProfileDir, name)) {
-                return { ok: false, detail: 'the previous build is incomplete (package.json or its entry file is missing)' }
+                return {
+                  ok: false,
+                  detail: 'the previous build is incomplete (package.json or its entry file is missing)',
+                  missingEntry: true,
+                }
               }
-              return { ok: true, detail: null }
+              return { ok: true, detail: null, missingEntry: false }
+            }
+
+            /**
+             * Stop declaring a package whose directory can no longer compose
+             * (#663).
+             *
+             * This is the one thing the market CAN do about the failure that
+             * brought it here. pnpm was refused when it tried to rename this
+             * plugin's new build over the old directory because a live process
+             * holds the directory open (measured: `EBUSY` on the emptied
+             * directory itself, so the lock is on the directory, not on a file
+             * inside it). Moving that directory aside, or deleting it — the two
+             * remedies the report asked for — are the SAME rename and delete
+             * pnpm just had refused, so both would fail here too.
+             *
+             * What is left, and what is actually enough: the harm is not the
+             * leftover directory, it is that the profile still DECLARES it.
+             * Composition stats the declared package's `package.json`, gets
+             * ENOENT, and on Desktop the window never opens — the reporter's
+             * only way out was uninstalling by hand, losing the version pin.
+             * Dropping the declaration removes that failure outright, touches
+             * nothing the user owns, and leaves the directory exactly where the
+             * user can retry it after quitting DSH.
+             *
+             * `hasLoadableEntry` is the market's own answer to "can this build
+             * load" — it is what the message we are replacing already asserts,
+             * and what the install path acts on when an installed package fails
+             * it. Acting on it here rather than inventing a second, narrower
+             * probe keeps one answer to one question.
+             */
+            const dropBrokenDeclaration = (reason: string): void => {
+              const spec = manifestBefore.dependencies[name] ?? ''
+              const dropped = dropFromManifest(config.profile, name, activeProfileDir)
+              marketState.brokenPlugins = {
+                ...(marketState.brokenPlugins ?? {}),
+                [name]: { spec, reason: 'incomplete-build-locked', at: new Date().toISOString() },
+              }
+              writeMarketState(activeProfileDir, marketState)
+              // The log line is the durable record: the notice is per-session,
+              // and the plugin is gone from the installed list — so without
+              // this, "my plugin disappeared" has no answer anywhere.
+              logEvent('error', 'update-removed-declaration',
+                `${name}: ${reason}; removed from the profile's dependencies and dsh.profile.bundles so the next start can compose — reinstall it from the market after quitting DSH`
+                + (dropped ? '' : ' (nothing to drop: the profile did not declare it under either key)'))
             }
             if ((result.exitCode !== 0 || result.timedOut) && !cancelled && result.busy !== true
               && !pnpmNeverStarted(result)) {
@@ -3611,6 +3693,14 @@ sendJson(response, 200, { updates })
                   // classifier's explanation. The long form stays in stderr.
                   hardFailureRollbackError = `${name} 更新未生效：运行中的 DSH 占用着它的文件，pnpm 无法替换目录；package.json 与 pnpm-lock.yaml 已恢复为更新前的版本，更新前构建的入口仍在。请完全退出 DSH 后再更新一次。 / ${name} update did not apply: the running DSH holds its files open and pnpm could not replace the directory; package.json and pnpm-lock.yaml are back to the previous version and the previous build still has its entry. Quit DSH completely and update again.`
                   logEvent('warn', 'update', `${name}: the running host holds its files open, so the update did not apply; package.json and pnpm-lock.yaml restored, previous build still has a loadable entry, nothing reinstalled`)
+                } else if (kept.missingEntry) {
+                  // Nothing worth keeping AND nothing composable: the profile
+                  // must stop declaring it, or the next start is the one that
+                  // finds out (#663).
+                  dropBrokenDeclaration('the update was blocked by open files and the previous build is incomplete')
+                  removedDeclaration = { name, spec: manifestBefore.dependencies[name] ?? '', reason: 'incomplete-build-locked' }
+                  hardFailureRollbackError = `${name} 更新未生效：运行中的 DSH 占用着它的文件，pnpm 无法替换目录，而且更新前的构建已经残缺。留着一个「声明了却装不起来」的插件会让下一次启动卡在 profile 组装——桌面端会直接打不开窗口——所以市场已经把它从 package.json 与 dsh.profile.bundles 里移除了。目录本身没有被删（它的子进程正占用着，DSH 运行时无法移除），版本声明已记下：**完全退出 DSH 之后**在市场里重新安装它即可。 / ${name} update did not apply: the running DSH holds its files open, pnpm could not replace the directory, and the previous build is already incomplete. Leaving a declared-but-uninstallable plugin behind makes the next start fail during profile composition — on Desktop the window does not open at all — so the market removed it from package.json and dsh.profile.bundles. The directory itself was not deleted (this plugin's own process holds it open, which is why DSH cannot remove it while running); the version it had is recorded: reinstall it from the market after quitting DSH completely.`
+                  logEvent('error', 'update-rollback', `${name}: the running host holds its files open and the previous state could not be fully restored — ${kept.detail ?? 'unknown'}`)
                 } else {
                   hardFailureRollbackError = `${name} 更新未生效：运行中的 DSH 占用着它的文件，pnpm 无法替换目录，且更新前的状态未能完整恢复（${kept.detail ?? 'unknown'}）。DSH 运行期间无法重装，请完全退出 DSH 后再更新一次。 / ${name} update did not apply: the running DSH holds its files open and pnpm could not replace the directory, and the previous state could not be fully restored (${kept.detail ?? 'unknown'}). It cannot be reinstalled while DSH is running; quit DSH completely and update again.`
                   logEvent('error', 'update-rollback', `${name}: the running host holds its files open and the previous state could not be fully restored — ${kept.detail ?? 'unknown'}`)
@@ -3892,6 +3982,7 @@ sendJson(response, 200, { updates })
             // Reporting the blocked packages here gives the client the same
             // approve-and-retry banner the install flow has had since #6.
             const ignoredBuilds = ok || cancelled ? undefined : blockedBuilds(result)
+            if (ok) clearBrokenPlugin(name)
             logEvent(ok || cancelled ? 'info' : 'error', 'update',
               `${name} -> ${target} exit=${String(result.exitCode)}${result.timedOut ? ' TIMEOUT' : ''}${cancelled ? ' CANCELLED' : ''}${stale ? ` STALE(${staleReason ?? 'unknown'})` : ''}${ok || cancelled ? '' : ` err=${failureDetail(result)}`}`)
             // A user-cancelled run is a quiet outcome, not an error.
@@ -3912,6 +4003,7 @@ sendJson(response, 200, { updates })
               staleReason: staleReason ?? undefined,
               failureCode: versionFailureCode ?? undefined,
               renamedTo: renamedTo ?? undefined,
+              removedDeclaration: removedDeclaration ?? undefined,
               error: versionFailureError ?? renamedError ?? trialError ?? brokenEntryError ?? hardFailureRollbackError ?? staleError ?? undefined,
               exitCode: result.exitCode,
               timedOut: result.timedOut,
@@ -5034,6 +5126,7 @@ sendJson(response, 200, { updates })
                 }
               }
             }
+            if (ok) clearBrokenPlugin(entry.name)
             logEvent(ok || cancelled ? 'info' : 'error', 'install',
               `${target} exit=${String(result.exitCode)}${result.timedOut ? ' TIMEOUT' : ''}${cancelled ? ' CANCELLED' : ''}${ok ? ` hot=${String(hot)}` : cancelled ? '' : ` err=${failureDetail(result)}`}`)
             const ignoredBuilds = blockedBuilds(result)

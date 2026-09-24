@@ -2718,6 +2718,62 @@ describe('installed masonry layout (#273)', () => {
   })
 })
 
+describe('a plugin the market had to stop declaring (#663)', () => {
+  // The plugin is NOT in `installed` — that is the whole point: the
+  // declaration is gone, so nothing else in the UI can explain it.
+  const brokenInstalled = {
+    profile: 'web', installed: {}, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [],
+    brokenPlugins: { 'dsh-pet': { spec: '^1.4.0', reason: 'incomplete-build-locked', at: '2026-09-24T00:00:00.000Z' } },
+  }
+
+  it('says what happened instead of leaving the plugin silently gone', async () => {
+    stubFetch({ '/dsh-market/installed': brokenInstalled })
+
+    render(<MarketSection {...props()} preferredSubsectionId="installed" />)
+
+    await screen.findByText(en.brokenPluginTitle.replace('{0}', 'dsh-pet'))
+    expect(screen.getByText(en.brokenPluginBody)).toBeTruthy()
+    // Rendered even though the list is empty: a plugin that was the only one
+    // installed leaves "no plugins yet" and this notice side by side, and the
+    // notice is the only half telling the truth.
+    expect(screen.getByText(en.installedEmpty)).toBeTruthy()
+  })
+
+  it('leads to the catalog entry, where installing it again is one click', async () => {
+    stubFetch({ '/dsh-market/installed': brokenInstalled })
+
+    render(<MarketSection {...props()} preferredSubsectionId="installed" />)
+    const action = await screen.findByRole('button', { name: en.brokenPluginAction })
+    fireEvent.click(action)
+
+    // The query the user needs, already typed: a name they may not remember,
+    // now that the installed row that carried it is gone.
+    expect((screen.getByPlaceholderText(en.searchPh) as HTMLInputElement).value).toBe('dsh-pet')
+  })
+
+  it('takes the notice away when the plugin comes back', async () => {
+    // Reinstalled: declared again, healthy, and no longer in brokenPlugins.
+    // The market drops the entry server-side on a successful install, and the
+    // client reads it from the same refresh every install already triggers —
+    // so the notice leaves with the plugin's return, not on the next reload.
+    const answered = [
+      brokenInstalled,
+      { ...brokenInstalled, installed: { 'dsh-pet': '^1.4.0' }, brokenPlugins: {} },
+    ]
+    let call = 0
+    stubFetch({ '/dsh-market/installed': () => answered[Math.min(call++, answered.length - 1)] })
+
+    render(<MarketSection {...props()} preferredSubsectionId="installed" />)
+    await screen.findByText(en.brokenPluginTitle.replace('{0}', 'dsh-pet'))
+
+    // Re-entering the tab is what the client does after any operation.
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    await waitFor(() => {
+      expect(screen.queryByText(en.brokenPluginTitle.replace('{0}', 'dsh-pet'))).toBeNull()
+    })
+  })
+})
+
 describe('browser page translation (#293)', () => {
   it('marks the market subtree untranslatable, so a translated page cannot unmount it', () => {
     // Chrome and Edge translate by REPLACING text nodes. React then tries to

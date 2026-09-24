@@ -1207,6 +1207,11 @@ function installedMap(value: unknown): InstalledMap {
   return installed
 }
 
+/** A `{name: {...}}` map, or anything else — for untyped server fields. */
+function isRecordOfRecords(value: unknown): value is Record<string, { spec?: string; reason?: string }> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
 function sameInstalledMap(left: InstalledMap, right: InstalledMap): boolean {
   const names = Object.keys(left)
   return names.length === Object.keys(right).length && names.every(name => left[name] === right[name])
@@ -1565,6 +1570,14 @@ export function MarketSection(props: MarketSectionProps) {
   /** Client-part plugins toggled this session — their UI needs a refresh. */
   const [refreshNames, setRefreshNames] = useState<string[]>([])
   const [envReady, setEnvReady] = useState(true)
+  /**
+   * Packages the market stopped declaring because their build could no longer
+   * compose (#663). They are gone from the installed list — this is the only
+   * thing that can say why, so it is read from `/status` on every poll rather
+   * than folded into a one-shot reply.
+   */
+  const [brokenPlugins, setBrokenPlugins] = useState<Record<string, { spec?: string; reason?: string }>>({})
+  const brokenPluginNames = useMemo(() => Object.keys(brokenPlugins), [brokenPlugins])
   const [envFixing, setEnvFixing] = useState(false)
   const [envFailed, setEnvFailed] = useState(false)
   const [bootId, setBootId] = useState<string | null>(null)
@@ -1695,6 +1708,7 @@ export function MarketSection(props: MarketSectionProps) {
           && Array.isArray(body.diagnostics.findings)
           ? body.diagnostics.findings.filter(isHostDependencyFinding)
           : []
+        setBrokenPlugins(isRecordOfRecords(body.brokenPlugins) ? body.brokenPlugins : {})
         setHostDependencyFindings(findings)
       })
       .catch(() => {})
@@ -4240,6 +4254,25 @@ export function MarketSection(props: MarketSectionProps) {
           </div>
         )}
         {tab === 'installed' && <HostDependencyDiagnostics findings={hostDependencyFindings} t={t} />}
+        {tab === 'installed' && brokenPluginNames.length > 0 && (
+          <div className={css.brokenPluginNotice}>
+            {brokenPluginNames.map(name => (
+              <div key={name} className={css.brokenPluginItem}>
+                <div className={css.brokenPluginText}>
+                  <b>{t('brokenPluginTitle').replace('{0}', name)}</b>
+                  <span>{t('brokenPluginBody')}</span>
+                </div>
+                {/* Same road the replacement hint takes: search for it and
+                    land on the catalog, where Install does the right thing. */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => { setCat('all'); setQ(name); setTab('discover') }}
+                >{t('brokenPluginAction')}</Button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       {buildsSkipped !== null && (
         <div className={css.banner}>
