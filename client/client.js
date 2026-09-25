@@ -13647,6 +13647,20 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					sectionGate.retire();
 				}
 			})));
+			const pluginsTabCtx = ctx;
+			pluginsTabCtx.slots.inject("settings.plugins.tab", () => pluginsTabCtx.slots.register({
+				name: "settings.plugins.tab",
+				id: NS,
+				order: 60,
+				label: () => t("nav"),
+				locale: NS,
+				inject: () => ({ t })
+			}, () => (0, react.createElement)(SettingsCard, {
+				t,
+				onRemoved: () => {
+					sectionGate.retire();
+				}
+			})));
 			const Toast = () => (0, react.createElement)(InstallToast, { t });
 			ctx.slots.inject("shell.overlay", () => ctx.slots.register({
 				name: "shell.overlay",

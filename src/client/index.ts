@@ -245,6 +245,34 @@ export function apply(ctx: MarketClientContext): void {
     ? null
     : h(SettingsCard, { t, onRemoved: () => { sectionGate.retire() } })))
 
+  // The seat on the 0.1.7 line (#722). That release moved a plugin's
+  // configuration off the settings list and into the Plugins section: the
+  // `settingsScope` service and the `settings.plugin.item` slot that hung off
+  // it are gone, and `settings.plugins.tab` is what its slot contract offers —
+  // "one page inside the Plugins settings section", rendered as a tab beside
+  // the host's own. Without it the market had NO card on that line at all: the
+  // `plugins.bundle.config` registration above never fires, because no host
+  // declares that slot, and a registration into a slot nobody declares is
+  // silent by construction. Reported as "the settings card disappeared".
+  //
+  // Detection is the slot itself, as everywhere else here: a host that does
+  // not declare it never runs this, and the older line keeps its card through
+  // `settings.plugin.item`.
+  const pluginsTabCtx = ctx as unknown as {
+    slots: {
+      inject(name: string, register: () => unknown): void
+      register(options: Record<string, unknown>, render: () => unknown): unknown
+    }
+  }
+  pluginsTabCtx.slots.inject('settings.plugins.tab', () => pluginsTabCtx.slots.register({
+    name: 'settings.plugins.tab',
+    id: NS,
+    order: 60,
+    label: () => t('nav'),
+    locale: NS,
+    inject: () => ({ t }),
+  }, () => h(SettingsCard, { t, onRemoved: () => { sectionGate.retire() } })))
+
   const Toast = () => h(InstallToast, { t })
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay',
