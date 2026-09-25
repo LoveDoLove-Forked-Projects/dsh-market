@@ -68,3 +68,23 @@ export type SwitchComponent = (props: {
 }) => ReactNode
 
 export const HostSwitch: SwitchComponent | null = optionalComponent<SwitchComponent>('Switch')
+
+/**
+ * `Checkbox` — the host's labelled checkbox. Null before 0.1.7-rc.2.
+ *
+ * It takes a STRING label, which is what limits its use here: the market's
+ * checkboxes that carry rich label content (the export rows: name, spec kind,
+ * resolved spec) or no visible label at all (the recovery panel's) stay native
+ * markup — routing those through this would either lose the row's content or
+ * duplicate it.
+ */
+export type CheckboxComponent = (props: {
+  checked: boolean
+  onChange: (next: boolean) => void
+  label: string
+  disabled?: boolean
+  title?: string
+  className?: string
+}) => ReactNode
+
+export const HostCheckbox: CheckboxComponent | null = optionalComponent<CheckboxComponent>('Checkbox')

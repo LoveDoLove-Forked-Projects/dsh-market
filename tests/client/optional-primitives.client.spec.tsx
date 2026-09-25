@@ -20,6 +20,8 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', async (importOriginal) => ({
     <span data-host-tag={tone ?? 'outline'}>{children}</span>,
   Switch: ({ checked, label }: { checked: boolean; label: string }) =>
     <button type="button" data-host-switch={String(checked)} aria-label={label} />,
+  Checkbox: ({ checked, label }: { checked: boolean; label: string }) =>
+    <label data-host-checkbox={String(checked)}>{label}</label>,
 }))
 
 import { MarketSection, resetMarketPortalHost } from '../../src/client/MarketSection.tsx'
@@ -102,5 +104,33 @@ describe('the on/off control on a host that has Switch', () => {
     const switches = document.querySelectorAll('[data-host-switch]')
     expect(switches.length).toBeGreaterThan(0)
     expect(switches[0]!.getAttribute('aria-label')).toMatch(/Disable dsh-tagged/)
+  })
+})
+
+describe('labelled checkboxes on a host that has Checkbox', () => {
+  it('uses the host checkbox for the market simple labelled ones', async () => {
+    // The Advanced tab's auto-backup flag is a plain labelled checkbox, which
+    // is exactly what the host's component is for. Its rich-label siblings
+    // (the export rows) keep native markup — `HostCheckbox` says why.
+    vi.stubGlobal('fetch', vi.fn((input: unknown) => {
+      const path = String(input).split('?')[0]
+      if (path === '/dsh-market/registry') return Promise.resolve(new Response(JSON.stringify({ source: 'live', hostVersion: '0.1.2-alpha.2', registry: REGISTRY })))
+      if (path === '/dsh-market/installed') return Promise.resolve(new Response(JSON.stringify({ profile: 'web', installed: {}, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [] })))
+      if (path === '/dsh-market/status') return Promise.resolve(new Response(JSON.stringify({ active: false, pnpm: true, boot: 'boot-1', restart: true, installed: {} })))
+      if (path === '/dsh-market/updates') return Promise.resolve(new Response(JSON.stringify({ updates: {} })))
+      return Promise.reject(new Error(`unstubbed fetch: ${path}`))
+    }))
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-tagged')
+    const advanced = screen.getAllByRole('button', { name: /^(Advanced|高级)$/u })
+      .find(button => /(^|_)tab(_|$)/u.test(button.className))
+    expect(advanced, 'no Advanced tab').toBeTruthy()
+    const { fireEvent } = await import('@testing-library/react')
+    fireEvent.click(advanced!)
+    const boxes = await screen.findAllByText(en.autoBackup)
+    expect(boxes.length).toBeGreaterThan(0)
+    const host = document.querySelector('[data-host-checkbox]')
+    expect(host).toBeTruthy()
+    expect(host!.textContent).toBe(en.autoBackup)
   })
 })

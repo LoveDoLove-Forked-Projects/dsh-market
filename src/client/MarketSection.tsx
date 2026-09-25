@@ -36,7 +36,7 @@ import {
   IconSparkle16,
   IconWarningOutline16,
 } from './icons.ts'
-import { HostSwitch, HostTag } from './optional-primitives.ts'
+import { HostCheckbox, HostSwitch, HostTag } from './optional-primitives.ts'
 import css from './Market.module.css'
 import { MARK_BLOCK_RADIUS, MARK_BLOCK_SIZE, MARK_GRID_BLOCKS, MARK_PLUG_BLOCK, MARK_VIEW_BOX } from './market-mark.ts'
 import { CommentsModal } from './CommentsModal.tsx'
@@ -4011,6 +4011,20 @@ export function MarketSection(props: MarketSectionProps) {
         </button>
       ))
 
+  /**
+   * A labelled checkbox: the host's when it has one, the market's label+input
+   * otherwise. Only the simple ones go through here — see `HostCheckbox` for
+   * why the export rows and the recovery panel keep their own markup.
+   */
+  const labelledCheckbox = (opts: { label: string; checked: boolean; disabled?: boolean; className?: string; onChange: (next: boolean) => void }) => (HostCheckbox !== null
+    ? <HostCheckbox checked={opts.checked} onChange={opts.onChange} label={opts.label} disabled={opts.disabled} className={opts.className} />
+    : (
+        <label className={opts.className}>
+          <input type="checkbox" checked={opts.checked} disabled={opts.disabled} onChange={event => opts.onChange(event.target.checked)} />
+          {opts.label}
+        </label>
+      ))
+
   const pluginCard = (p: RegistryPlugin) => {
     const desc = (p.description && (p.description[lang] || p.description.en)) || ''
     const done = doneUrls.includes(p.url) || hotUrls.includes(p.url)
@@ -4921,7 +4935,12 @@ export function MarketSection(props: MarketSectionProps) {
                     <Button variant="primary" size="sm" disabled={backupBusy || webdavUrl.trim() === ''} onClick={() => runWebdav('backup')}>{backupBusy ? t('backupWorking') : t('webdavUpload')}</Button>
                     <Button variant="outline" size="sm" disabled={backupBusy || webdavUrl.trim() === ''} onClick={() => runWebdav('restore')}>{t('webdavRestore')}</Button>
                   </div>
-                  <label className={css.backupCheck}><input type="checkbox" checked={autoBackup} onChange={e => setAutoBackup(e.target.checked)} />{t('autoBackup')}</label>
+                  {labelledCheckbox({
+                    label: t('autoBackup'),
+                    checked: autoBackup,
+                    className: css.backupCheck,
+                    onChange: setAutoBackup,
+                  })}
                   <p>{t('webdavNote')}</p>
                   <p className={css.backupWarn}>{t('credsWarning')}</p>
                 </section>
@@ -6394,10 +6413,12 @@ export function MarketSection(props: MarketSectionProps) {
                   </label>
                 ))}
               </div>
-              <label className={css.backupCheck}>
-                <input type="checkbox" checked={exportIncludeConfig} onChange={e => setExportIncludeConfig(e.target.checked)} />
-                {t('gistIncludeConfig')}
-              </label>
+              {labelledCheckbox({
+                label: t('gistIncludeConfig'),
+                checked: exportIncludeConfig,
+                className: css.backupCheck,
+                onChange: setExportIncludeConfig,
+              })}
               {exportIncludeConfig && <p className={css.backupWarn}>{t('credsWarning')}</p>}
               {exportError !== null && <p className={css.backupWarn}>{exportError}</p>}
             </>
