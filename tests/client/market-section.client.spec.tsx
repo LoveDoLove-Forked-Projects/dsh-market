@@ -3773,6 +3773,23 @@ describe('capability disclosure (#401)', () => {
 /** Stable identity — useSyncExternalStore reads a fresh object as a change. */
 const THEME_SNAPSHOT = { preference: 'light', themes: [] as Array<{ id: string }> }
 
+  it('renders the market own switch on a host without the primitives Switch', async () => {
+    // 0.1.0-rc.7 has no `Switch`, so this is the fallback half. (The host half
+    // is tests/client/optional-primitives.client.spec.tsx.) Nothing asserted
+    // this control at all before — the installed row's switch had no test.
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [],
+        activation: { 'dsh-loop': { state: 'live' } },
+      },
+    })
+    render(<MarketSection {...props()} preferredSubsectionId="installed" />)
+    await screen.findAllByText('dsh-loop')
+    const control = screen.getByRole('switch', { name: 'Disable dsh-loop' })
+    expect(control.getAttribute('aria-checked')).toBe('true')
+    expect(control.className).toMatch(/(^|_)switch+/u)
+  })
+
   it('shows the same facts on the Themes card as on the Discover card', async () => {
     // Two renderers draw the same plugin: the masonry card in Discover and the
     // gallery card in Themes. A fact on one and not the other reads as a

@@ -36,7 +36,7 @@ import {
   IconSparkle16,
   IconWarningOutline16,
 } from './icons.ts'
-import { HostTag } from './optional-primitives.ts'
+import { HostSwitch, HostTag } from './optional-primitives.ts'
 import css from './Market.module.css'
 import { MARK_BLOCK_RADIUS, MARK_BLOCK_SIZE, MARK_GRID_BLOCKS, MARK_PLUG_BLOCK, MARK_VIEW_BOX } from './market-mark.ts'
 import { CommentsModal } from './CommentsModal.tsx'
@@ -3987,6 +3987,30 @@ export function MarketSection(props: MarketSectionProps) {
               ))}
         </div>)
 
+  /**
+   * The enable/disable control, wherever it appears — the installed row, a
+   * group member row, the plugin detail view. One helper because they were
+   * three copies of the same markup, and because the host has this component:
+   * its own plugin list uses `Switch`, so the market's rows should look like
+   * the list they sit in. Before 0.1.7-rc.2 the market's own switch renders,
+   * with the same `role="switch"` contract either way.
+   */
+  const onOffSwitch = (opts: { label: string; on: boolean; disabled: boolean; toggle: () => void }) => (HostSwitch !== null
+    ? <HostSwitch checked={opts.on} onChange={() => opts.toggle()} label={opts.label} disabled={opts.disabled} />
+    : (
+        <button
+          type="button"
+          role="switch"
+          aria-checked={opts.on}
+          aria-label={opts.label}
+          className={opts.on ? `${css.switch} ${css.switchOn}` : css.switch}
+          disabled={opts.disabled}
+          onClick={opts.toggle}
+        >
+          <span className={css.switchKnob} />
+        </button>
+      ))
+
   const pluginCard = (p: RegistryPlugin) => {
     const desc = (p.description && (p.description[lang] || p.description.en)) || ''
     const done = doneUrls.includes(p.url) || hotUrls.includes(p.url)
@@ -5276,6 +5300,12 @@ export function MarketSection(props: MarketSectionProps) {
                                             ? <IconChevronRightOutline14 size={14} />
                                             : <IconChevronDownOutline14 size={14} />}
                                         </button>
+                                        {/* Deliberately NOT onOffSwitch: a group's state is
+                                            three-valued (all on / all off / mixed), and the
+                                            host's Switch is a boolean control — routing this
+                                            through it would flatten "mixed" into one of the
+                                            two, which is the one thing this switch must not
+                                            say. */}
                                         <button
                                           type="button"
                                           role="switch"
@@ -5355,17 +5385,12 @@ export function MarketSection(props: MarketSectionProps) {
                                                 {installedThemeNames.has(member) && <span className={css.memberKind}>· {t('groupThemeBadge')}</span>}
                                               </span>
                                               {effectiveDisabledSet.has(member) && <span className={css.spec}>{t('disabledState')}</span>}
-                                              <button
-                                                type="button"
-                                                role="switch"
-                                                aria-checked={!effectiveDisabledSet.has(member)}
-                                                aria-label={(effectiveDisabledSet.has(member) ? t('enable') : t('disable')) + ' ' + member}
-                                                className={effectiveDisabledSet.has(member) ? css.switch : `${css.switch} ${css.switchOn}`}
-                                                disabled={togglingName !== null}
-                                                onClick={() => doToggle(member, effectiveDisabledSet.has(member))}
-                                              >
-                                                <span className={css.switchKnob} />
-                                              </button>
+                                              {onOffSwitch({
+                                                label: (effectiveDisabledSet.has(member) ? t('enable') : t('disable')) + ' ' + member,
+                                                on: !effectiveDisabledSet.has(member),
+                                                disabled: togglingName !== null,
+                                                toggle: () => doToggle(member, effectiveDisabledSet.has(member)),
+                                              })}
                                               <Button variant="ghost" size="sm" onClick={() => doRemoveMember(gid, member)}>{t('groupRemove')}</Button>
                                             </div>
                                           ))}
@@ -5703,17 +5728,12 @@ export function MarketSection(props: MarketSectionProps) {
                                   </span>
                                 )}
                                 {toggleable && (
-                                  <button
-                                    type="button"
-                                    role="switch"
-                                    aria-checked={!off}
-                                    aria-label={(off ? t('enable') : t('disable')) + ' ' + name}
-                                    className={off ? css.switch : `${css.switch} ${css.switchOn}`}
-                                    disabled={togglingName !== null || busyUrl !== null || updatingName !== null || removingName !== null}
-                                    onClick={() => doToggle(name, off)}
-                                  >
-                                    <span className={css.switchKnob} />
-                                  </button>
+                                  onOffSwitch({
+                                    label: (off ? t('enable') : t('disable')) + ' ' + name,
+                                    on: !off,
+                                    disabled: togglingName !== null || busyUrl !== null || updatingName !== null || removingName !== null,
+                                    toggle: () => doToggle(name, off),
+                                  })
                                 )}
                                 {/* State and switch pack left, the operations
                                     pack right: with everything in one flow the

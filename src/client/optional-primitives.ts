@@ -52,3 +52,19 @@ function optionalComponent<T>(name: string): T | null {
  * (capabilities, categories). Null on hosts older than 0.1.7-rc.2.
  */
 export const HostTag: TagComponent | null = optionalComponent<TagComponent>('Tag')
+
+/**
+ * `Switch` — the host's on/off control, the one its own plugin list uses.
+ * Null before 0.1.7-rc.2, where the market renders its own switch (same
+ * `role="switch"` contract, the market's styling).
+ */
+export type SwitchComponent = (props: {
+  checked: boolean
+  onChange: (next: boolean) => void
+  label: string
+  disabled?: boolean
+  title?: string
+  className?: string
+}) => ReactNode
+
+export const HostSwitch: SwitchComponent | null = optionalComponent<SwitchComponent>('Switch')

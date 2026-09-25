@@ -18,6 +18,8 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', async (importOriginal) => ({
   // handle, and what matters here is WHO rendered the chip, not how it looks.
   Tag: ({ tone, children }: { tone?: string; children?: ReactNode }) =>
     <span data-host-tag={tone ?? 'outline'}>{children}</span>,
+  Switch: ({ checked, label }: { checked: boolean; label: string }) =>
+    <button type="button" data-host-switch={String(checked)} aria-label={label} />,
 }))
 
 import { MarketSection, resetMarketPortalHost } from '../../src/client/MarketSection.tsx'
@@ -71,5 +73,34 @@ describe('capability chips on a host that has Tag', () => {
     // The absence state is a quieter fact, so it asks for the quieter tone.
     const none = screen.queryByText(en.capabilityNone)
     expect(none === null || none.getAttribute('data-host-tag') === 'quiet').toBe(true)
+  })
+})
+
+describe('the on/off control on a host that has Switch', () => {
+  it('renders the host switch in the installed rows, not the market one', async () => {
+    // The host's own plugin list uses `Switch`; the market's rows sit in that
+    // list, so they take it too. The market's markup is the fallback (asserted
+    // in the main spec, which runs against 0.1.0-rc.7).
+    vi.stubGlobal('fetch', vi.fn((input: unknown) => {
+      const path = String(input).split('?')[0]
+      if (path === '/dsh-market/registry') return Promise.resolve(new Response(JSON.stringify({ source: 'live', hostVersion: '0.1.2-alpha.2', registry: REGISTRY })))
+      if (path === '/dsh-market/installed') {
+        return Promise.resolve(new Response(JSON.stringify({
+          profile: 'web', installed: { 'dsh-tagged': '^1.0.0' }, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [],
+          // A switch renders only for a state the market can switch: off, or
+          // live/restart. Without this the row is inert and shows a diagnosis
+          // instead (#60).
+          activation: { 'dsh-tagged': { state: 'live' } },
+        })))
+      }
+      if (path === '/dsh-market/status') return Promise.resolve(new Response(JSON.stringify({ active: false, pnpm: true, boot: 'boot-1', restart: true, installed: { 'dsh-tagged': '^1.0.0' } })))
+      if (path === '/dsh-market/updates') return Promise.resolve(new Response(JSON.stringify({ updates: {} })))
+      return Promise.reject(new Error(`unstubbed fetch: ${path}`))
+    }))
+    render(<MarketSection {...props()} preferredSubsectionId="installed" />)
+    await screen.findAllByText('dsh-tagged')
+    const switches = document.querySelectorAll('[data-host-switch]')
+    expect(switches.length).toBeGreaterThan(0)
+    expect(switches[0]!.getAttribute('aria-label')).toMatch(/Disable dsh-tagged/)
   })
 })
