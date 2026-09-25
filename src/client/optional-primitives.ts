@@ -28,7 +28,17 @@ export type TagTone = 'outline' | 'solid' | 'neutral' | 'quiet' | 'success' | 'i
 export type TagComponent = (props: { tone?: TagTone; className?: string; children?: ReactNode }) => ReactNode
 
 function optionalComponent<T>(name: string): T | null {
-  const value = (primitives as unknown as Record<string, unknown>)[name]
+  let value: unknown
+  try {
+    value = (primitives as unknown as Record<string, unknown>)[name]
+  } catch {
+    // A module shim can be a strict proxy that THROWS on an unknown export
+    // rather than answering undefined (vitest's own module mock does exactly
+    // that). "The host does not have this component" and "asking threw" are
+    // the same answer here, and the call site's fallback is the right response
+    // to both.
+    return null
+  }
   // React components are functions, or objects tagged with $$typeof (memo /
   // forwardRef wrappers). Anything else — undefined on an older host, a string
   // from a bad shim — is not a component and must not be rendered as one.

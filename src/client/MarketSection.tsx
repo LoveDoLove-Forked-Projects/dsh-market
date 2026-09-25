@@ -3959,6 +3959,34 @@ export function MarketSection(props: MarketSectionProps) {
     return line
   }
 
+  /**
+   * What the plugin touches (#401), rendered the same way by both card
+   * renderers. The Discover card and the Themes card show the same plugin, so
+   * a fact that appears on one and not the other reads as a difference between
+   * the PLUGINS rather than between the cards.
+   */
+  const capabilityRow = (p: RegistryPlugin) => (
+    <div className={css.caps}>
+        <Tooltip label={t('capabilityNote')} side="top">
+          <span className={css.capsTitle}>{t('capabilityTitle')}</span>
+        </Tooltip>
+        {p.capabilityRedLines?.map(line => (
+          <span key={line} className={css.capRed}>{t('capabilityRedLine').replace('{0}', redLineLabel(line))}</span>
+        ))}
+        {p.capabilities === undefined
+          ? (HostTag !== null
+              ? <HostTag tone="quiet" data-state="unchecked">{t('capabilityUnchecked')}</HostTag>
+              : <span className={css.capMuted} data-state="unchecked">{t('capabilityUnchecked')}</span>)
+          : p.capabilities.length === 0
+            ? (HostTag !== null
+                ? <HostTag tone="quiet" data-state="none">{t('capabilityNone')}</HostTag>
+                : <span className={css.capMuted} data-state="none">{t('capabilityNone')}</span>)
+            : p.capabilities.map(name => (HostTag !== null
+                ? <HostTag key={name} tone="outline" className={css.capChip}>{capabilityLabel(name)}</HostTag>
+                : <span key={name} className={css.capChip}>{capabilityLabel(name)}</span>
+              ))}
+        </div>)
+
   const pluginCard = (p: RegistryPlugin) => {
     const desc = (p.description && (p.description[lang] || p.description.en)) || ''
     const done = doneUrls.includes(p.url) || hotUrls.includes(p.url)
@@ -4068,26 +4096,7 @@ export function MarketSection(props: MarketSectionProps) {
         {/* Capability disclosure (#401): facts on the card, never a badge.
             Three states, because they are three different sentences —
             capabilities detected, nothing detected, and never looked at. */}
-        <div className={css.caps}>
-          <Tooltip label={t('capabilityNote')} side="top">
-            <span className={css.capsTitle}>{t('capabilityTitle')}</span>
-          </Tooltip>
-          {p.capabilityRedLines?.map(line => (
-            <span key={line} className={css.capRed}>{t('capabilityRedLine').replace('{0}', redLineLabel(line))}</span>
-          ))}
-          {p.capabilities === undefined
-            ? (HostTag !== null
-                ? <HostTag tone="quiet" data-state="unchecked">{t('capabilityUnchecked')}</HostTag>
-                : <span className={css.capMuted} data-state="unchecked">{t('capabilityUnchecked')}</span>)
-            : p.capabilities.length === 0
-              ? (HostTag !== null
-                  ? <HostTag tone="quiet" data-state="none">{t('capabilityNone')}</HostTag>
-                  : <span className={css.capMuted} data-state="none">{t('capabilityNone')}</span>)
-              : p.capabilities.map(name => (HostTag !== null
-                  ? <HostTag key={name} tone="outline" className={css.capChip}>{capabilityLabel(name)}</HostTag>
-                  : <span key={name} className={css.capChip}>{capabilityLabel(name)}</span>
-                ))}
-        </div>
+{capabilityRow(p)}
         <div className={css.foot}>
           <div className={css.footTags}>
             <span
@@ -4198,6 +4207,7 @@ export function MarketSection(props: MarketSectionProps) {
           </div>
 
           <p className={css.themeDescription} title={desc}>{desc}</p>
+          {capabilityRow(p)}
 
           {p.deprecated === true && (
             <div className={css.deprecate}>

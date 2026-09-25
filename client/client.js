@@ -2717,7 +2717,12 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		//#endregion
 		//#region src/client/optional-primitives.ts
 		function optionalComponent(name) {
-			const value = _deepseek_ai_dsh_client_ui_primitives[name];
+			let value;
+			try {
+				value = _deepseek_ai_dsh_client_ui_primitives[name];
+			} catch {
+				return null;
+			}
 			if (typeof value === "function") return value;
 			if (value !== null && typeof value === "object" && "$$typeof" in value) return value;
 			return null;
@@ -9697,6 +9702,53 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				if (plaintext !== null) return t("capRedPlaintextHttp").replace("{0}", plaintext[1]);
 				return line;
 			};
+			/**
+			* What the plugin touches (#401), rendered the same way by both card
+			* renderers. The Discover card and the Themes card show the same plugin, so
+			* a fact that appears on one and not the other reads as a difference between
+			* the PLUGINS rather than between the cards.
+			*/
+			const capabilityRow = (p) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: Market_module_css_default.caps,
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
+						label: t("capabilityNote"),
+						side: "top",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: Market_module_css_default.capsTitle,
+							children: t("capabilityTitle")
+						})
+					}),
+					p.capabilityRedLines?.map((line) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: Market_module_css_default.capRed,
+						children: t("capabilityRedLine").replace("{0}", redLineLabel(line))
+					}, line)),
+					p.capabilities === void 0 ? HostTag !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(HostTag, {
+						tone: "quiet",
+						"data-state": "unchecked",
+						children: t("capabilityUnchecked")
+					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: Market_module_css_default.capMuted,
+						"data-state": "unchecked",
+						children: t("capabilityUnchecked")
+					}) : p.capabilities.length === 0 ? HostTag !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(HostTag, {
+						tone: "quiet",
+						"data-state": "none",
+						children: t("capabilityNone")
+					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: Market_module_css_default.capMuted,
+						"data-state": "none",
+						children: t("capabilityNone")
+					}) : p.capabilities.map((name) => HostTag !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(HostTag, {
+						tone: "outline",
+						className: Market_module_css_default.capChip,
+						children: capabilityLabel(name)
+					}, name) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: Market_module_css_default.capChip,
+						children: capabilityLabel(name)
+					}, name))
+				]
+			});
 			const pluginCard = (p) => {
 				const desc = p.description && (p.description[lang] || p.description.en) || "";
 				const done = doneUrls.includes(p.url) || hotUrls.includes(p.url);
@@ -9824,47 +9876,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								})]
 							})
 						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: Market_module_css_default.caps,
-							children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-									label: t("capabilityNote"),
-									side: "top",
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: Market_module_css_default.capsTitle,
-										children: t("capabilityTitle")
-									})
-								}),
-								p.capabilityRedLines?.map((line) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									className: Market_module_css_default.capRed,
-									children: t("capabilityRedLine").replace("{0}", redLineLabel(line))
-								}, line)),
-								p.capabilities === void 0 ? HostTag !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(HostTag, {
-									tone: "quiet",
-									"data-state": "unchecked",
-									children: t("capabilityUnchecked")
-								}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									className: Market_module_css_default.capMuted,
-									"data-state": "unchecked",
-									children: t("capabilityUnchecked")
-								}) : p.capabilities.length === 0 ? HostTag !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(HostTag, {
-									tone: "quiet",
-									"data-state": "none",
-									children: t("capabilityNone")
-								}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									className: Market_module_css_default.capMuted,
-									"data-state": "none",
-									children: t("capabilityNone")
-								}) : p.capabilities.map((name) => HostTag !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(HostTag, {
-									tone: "outline",
-									className: Market_module_css_default.capChip,
-									children: capabilityLabel(name)
-								}, name) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									className: Market_module_css_default.capChip,
-									children: capabilityLabel(name)
-								}, name))
-							]
-						}),
+						capabilityRow(p),
 						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: Market_module_css_default.foot,
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -10010,6 +10022,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								title: desc,
 								children: desc
 							}),
+							capabilityRow(p),
 							p.deprecated === true && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 								className: Market_module_css_default.deprecate,
 								children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {

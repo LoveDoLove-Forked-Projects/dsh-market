@@ -3770,6 +3770,45 @@ describe('capability disclosure (#401)', () => {
     expect(screen.queryByText(/safe/i)).toBeNull()
   })
 
+/** Stable identity — useSyncExternalStore reads a fresh object as a change. */
+const THEME_SNAPSHOT = { preference: 'light', themes: [] as Array<{ id: string }> }
+
+  it('shows the same facts on the Themes card as on the Discover card', async () => {
+    // Two renderers draw the same plugin: the masonry card in Discover and the
+    // gallery card in Themes. A fact on one and not the other reads as a
+    // difference between the PLUGINS, so the row is shared, not re-written.
+    withEntry({
+      category: 'theme',
+      capabilities: ['shell', 'network'],
+      capabilityRedLines: ['reads credentials/secrets AND has network access'],
+      capabilityCheckedAt: '2026-09-24T12:00:00Z',
+    })
+    // A theme snapshot is what makes the Themes TAB exist at all: the tab is
+    // rendered only when the host has a theme service, and `props()` alone
+    // leaves it out.
+    const { container } = render(<MarketSection {...props()}
+      themeStore={{ subscribe: () => () => {}, getSnapshot: () => THEME_SNAPSHOT }} />)
+    await screen.findByText('dsh-probe-target')
+    // Discover: the masonry card carries the row.
+    const masonry = container.querySelector('[class*="masonryCol"]') as HTMLElement
+    expect(within(masonry).getByText(en.capShell)).toBeTruthy()
+
+    // The tab, not the category pill of the same name: both are buttons with
+    // that label, and only one of them switches the tab.
+    const themeTab = screen.getAllByRole('button', { name: re(en.tabThemes) })
+      .find(button => /(^|_)tab(_|$)/u.test(button.className))
+    expect(themeTab, 'no tab button named Themes').toBeTruthy()
+    fireEvent.click(themeTab!)
+    await screen.findByRole('button', { name: en.install })
+    // Themes: the GALLERY card carries the same row — scoped to the gallery,
+    // because both tabs stay mounted and an unscoped query would find the
+    // Discover card and pass whether or not the theme card renders anything.
+    const gallery = container.querySelector('[class*="themeCard"]') as HTMLElement
+    expect(within(gallery).getByText(en.capShell)).toBeTruthy()
+    expect(within(gallery).getByText(en.capNetwork)).toBeTruthy()
+    expect(within(gallery).getByText(en.capabilityRedLine.replace('{0}', en.capRedCredentialsNetwork))).toBeTruthy()
+  })
+
   it('says the blind spots out loud, next to the chips', async () => {
     // The copy is load-bearing: a scan that cannot see node_modules,
     // runtime-assembled URLs or dynamic imports must not read as clearance.
