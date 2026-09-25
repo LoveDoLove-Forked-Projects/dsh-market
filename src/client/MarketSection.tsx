@@ -36,6 +36,7 @@ import {
   IconSparkle16,
   IconWarningOutline16,
 } from './icons.ts'
+import { HostTag } from './optional-primitives.ts'
 import css from './Market.module.css'
 import { MARK_BLOCK_RADIUS, MARK_BLOCK_SIZE, MARK_GRID_BLOCKS, MARK_PLUG_BLOCK, MARK_VIEW_BOX } from './market-mark.ts'
 import { CommentsModal } from './CommentsModal.tsx'
@@ -4075,11 +4076,16 @@ export function MarketSection(props: MarketSectionProps) {
             <span key={line} className={css.capRed}>{t('capabilityRedLine').replace('{0}', redLineLabel(line))}</span>
           ))}
           {p.capabilities === undefined
-            ? <span className={css.capMuted} data-state="unchecked">{t('capabilityUnchecked')}</span>
+            ? (HostTag !== null
+                ? <HostTag tone="quiet" data-state="unchecked">{t('capabilityUnchecked')}</HostTag>
+                : <span className={css.capMuted} data-state="unchecked">{t('capabilityUnchecked')}</span>)
             : p.capabilities.length === 0
-              ? <span className={css.capMuted} data-state="none">{t('capabilityNone')}</span>
-              : p.capabilities.map(name => (
-                  <span key={name} className={css.capChip}>{capabilityLabel(name)}</span>
+              ? (HostTag !== null
+                  ? <HostTag tone="quiet" data-state="none">{t('capabilityNone')}</HostTag>
+                  : <span className={css.capMuted} data-state="none">{t('capabilityNone')}</span>)
+              : p.capabilities.map(name => (HostTag !== null
+                  ? <HostTag key={name} tone="outline" className={css.capChip}>{capabilityLabel(name)}</HostTag>
+                  : <span key={name} className={css.capChip}>{capabilityLabel(name)}</span>
                 ))}
         </div>
         <div className={css.foot}>

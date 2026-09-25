@@ -3760,6 +3760,10 @@ describe('capability disclosure (#401)', () => {
     expect(screen.getByText(en.capFsWrite)).toBeTruthy()
     expect(screen.getByText(en.capNetwork)).toBeTruthy()
     expect(screen.getByText(en.capCredentials)).toBeTruthy()
+    // This host (0.1.0-rc.7) has no `Tag`, so the market renders its own
+    // markup — the fallback half of "use the host's component when it has
+    // one". tests/client/optional-primitives.client.spec.tsx covers the other.
+    expect(screen.getByText(en.capShell).tagName).toBe('SPAN')
     // The one loud element on the card.
     expect(screen.getByText(en.capabilityRedLine.replace('{0}', en.capRedCredentialsNetwork))).toBeTruthy()
     // …and never the words that would turn disclosure into a verdict.
