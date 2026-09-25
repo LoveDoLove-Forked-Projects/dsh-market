@@ -7097,6 +7097,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				side: "top",
 				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 					className: Market_module_css_default.star,
+					tabIndex: 0,
 					"aria-label": tip,
 					children: "· ↓ " + formatCount(plugin.downloads) + " / " + t("downloadsPeriod")
 				})
