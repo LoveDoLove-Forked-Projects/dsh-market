@@ -76,21 +76,23 @@ async function until(predicate: () => boolean, timeoutMs: number): Promise<boole
 }
 
 describe('restartHelperSource (#177)', () => {
-  it('spawns the replacement with windowsHide, so a console-less helper does not leave a visible console owning it (#624)', () => {
-    // Only observable on Windows: the helper is detached, hence console-less,
-    // and without CREATE_NO_WINDOW the PowerShell it starts is handed a new,
-    // visible console that the replacement then lives in. The behaviour
-    // itself is pinned here as the rendered spawn call; the run-based specs
-    // below cover that the option does not change what happens elsewhere.
+  it('carries the replacement pid into the handoff, for the surface to wait on (#719)', () => {
+    // The window itself (45s, matching the budget src/recovery.ts allows a
+    // boot) is a constant in the generated source and is covered behaviourally
+    // from the other side, in tests/boot-recovery.spec.ts: a live replacement
+    // keeps the port. What has to be wired here is the pid — without it the
+    // surface can only guess "dead" from "not listening yet", which is the
+    // guess that deadlocked #719.
     const source = restartHelperSource(
-      { file: 'powershell.exe', args: ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', "& 'dsh.cmd' 'web'"], viaShell: false, detached: false },
+      { file: process.execPath, args: ['-e', 'process.exit(1)'], viaShell: false, detached: false },
       { cwd: process.cwd() },
-      { out: 'out.log', err: 'err.log' },
-      null,
+      { out: '/tmp/out.log', err: '/tmp/err.log' },
+      1234,
+      { script: '/tmp/recovery.js', config: '/tmp/recovery.json' },
     )
-    const spawnLine = source.split('\n').find(line => line.includes('spawn(file, args,'))
-    expect(spawnLine).toBeDefined()
-    expect(spawnLine).toContain('windowsHide: true')
+    expect(source).toContain('const upBy = Date.now() + 45000 + SETTLE_MS')
+    expect(source).toContain('replacementPid = child.pid ?? null')
+    expect(source).toContain('"--pid=" + String(replacementPid ?? 0)')
   })
 
   it('does not start the replacement while the old port is still held', async () => {
@@ -137,7 +139,7 @@ describe('restartHelperSource (#177)', () => {
       { out: join(dir, 'out.log'), err: errLog },
       port,
     )
-    const quick = source.replace('Date.now() + 20000', 'Date.now() + 1200')
+    const quick = source.replace('Date.now() + 45000', 'Date.now() + 1200')
     const child = spawn(process.execPath, ['-e', quick], { stdio: 'ignore' })
     cleanups.push(() => { child.kill() })
 
@@ -197,7 +199,7 @@ describe('restartHelperSource (#177)', () => {
     // The settle window is the seam: shortening it keeps the spec fast without
     // changing the rule under test.
     const quick = source.replace('const SETTLE_MS = 8000', `const SETTLE_MS = ${String(settleMs)}`)
-      .replace('Date.now() + 20000', 'Date.now() + 4000')
+      .replace('Date.now() + 45000', 'Date.now() + 4000')
     const child = spawn(process.execPath, ['-e', quick], { stdio: 'ignore' })
     cleanups.push(() => { child.kill() })
     return errLog

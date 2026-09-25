@@ -380,6 +380,62 @@ describe('startRecoveryServer', () => {
   })
 })
 
+describe('the replacement is given time to be dead (#719)', () => {
+  /** Whether the recovery surface answers on this port right now. */
+  const answers = async (port: number): Promise<boolean> => {
+    try {
+      await fetch(`http://127.0.0.1:${String(port)}/dsh-market/recovery`, { signal: AbortSignal.timeout(1000) })
+      return true
+    } catch {
+      return false
+    }
+  }
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  it('waits for a still-starting replacement instead of taking its port', async () => {
+    // The deadlock #719 describes in full: the helper gave up at 28s, this
+    // surface bound the port, and the replacement — which binds at ~42-45s on
+    // a source-run host — died on EADDRINUSE. The real host was the process
+    // just killed, so nothing could bring the origin back.
+    const { port, release } = await hold()
+    await release()
+    const { dir, patchPath } = makeProfile()
+    const config = makeConfig(dir, patchPath, [makePlugin('blamed-plugin')])
+    config.port = port
+    config.logs.err = join(dir, 'err.log')
+    writeFileSync(config.logs.err, TWO_ENTRIES_FAILED)
+
+    // A live stand-in for a slow boot: still running, then gone on its own.
+    const slow = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 3000)'], { stdio: 'ignore' })
+    cleanups.push(() => { slow.kill() })
+
+    const running = runRecovery(config, { exitCode: null, bound: false, replacementPid: slow.pid })
+    const base = 'http://127.0.0.1:' + String(port)
+    cleanups.push(async () => {
+      await fetch(base + '/dsh-market/recovery/release', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base },
+        body: '{}',
+      }).catch(() => undefined)
+      await Promise.race([running.catch(() => 'released'), sleep(3000)])
+    })
+
+    // While that process is alive the port stays unanswered. Before the fix
+    // this answered immediately, which is the whole bug.
+    await sleep(1500)
+    expect(await answers(port), 'the surface took the port from a starting replacement').toBe(false)
+
+    // And once it is gone, the surface that was waiting comes up.
+    const deadline = Date.now() + 20_000
+    let up = false
+    while (Date.now() < deadline && !up) {
+      up = await answers(port)
+      if (!up) await sleep(250)
+    }
+    expect(up, 'the surface never came up after the replacement exited').toBe(true)
+  })
+})
+
 describe('runRecovery', () => {
   it('comes back with the NEW failure when a written composition fails to boot too', async () => {
     // The whole point of the second round: the user's first guess was wrong,
