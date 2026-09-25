@@ -600,7 +600,14 @@
 .capsTitle{color:var(--dsw-alias-label-secondary,#8b949e);cursor:help}
 .capChip{border:1px solid var(--dsw-alias-border-l2,#30363d);border-radius:999px;padding:0 6px;color:var(--dsw-alias-label-primary,#c9d1d9);white-space:nowrap}
 .capMuted{border:1px dashed var(--dsw-alias-border-l2,#30363d);border-radius:999px;padding:0 6px;color:var(--dsw-alias-label-secondary,#8b949e);white-space:nowrap}
-.capRed{color:var(--dsw-alias-state-warn-primary,#d29922);white-space:normal;overflow-wrap:anywhere}
+/* The scanned facts that are not warnings: same quiet tone as the chips they
+   sit beside, because they are the same kind of thing — a statement about the
+   plugin, not a judgement about it. */
+.capFact{color:var(--dsw-alias-label-secondary,#8b949e)}
+/* The honesty clause under the facts. It was a hover tooltip while this row sat
+   on a card; it is body copy now, because the reader who opened this is the
+   reader who needs it. */
+.capCaveat{color:var(--dsw-alias-label-tertiary,#8b93a1);font-size:11px;line-height:16px;margin:6px 0 0}
 .searchField{position:relative;min-width:0;box-sizing:border-box}
 /* The primitives' Input applies className to its padded OUTER span, not the
    native input, so the reserved space for the clear button belongs here and

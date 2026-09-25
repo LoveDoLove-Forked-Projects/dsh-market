@@ -1857,6 +1857,7 @@ export function MarketSection(props: MarketSectionProps) {
   const [presetOpen, setPresetOpen] = useState(false)
   /** Install-command disclosure inside the confirm dialog. */
   const [cmdOpen, setCmdOpen] = useState(false)
+  const [capsOpen, setCapsOpen] = useState(false)
   /** Per-row "why is it not live" disclosure (installed tab). */
   const [whyOpen, setWhyOpen] = useState<string | null>(null)
   /** Restore-confirm dialog (replaces window.confirm). */
@@ -3957,46 +3958,104 @@ export function MarketSection(props: MarketSectionProps) {
   }
 
   /**
-   * The scanner's red-line sentences, translated where this build knows them.
+   * The scanner's red-line sentences, in the reader's language.
    *
-   * A sentence it does not know stays in the scanner's language on purpose: a
-   * mistranslation of a security fact is worse than a foreign word, and the
-   * line is the one thing on the card a reader must not misread.
+   * The scanner emits a fixed set of shapes — one per rule family — and every
+   * one of them is translated here. A sentence from a family this build does
+   * not know stays in the scanner's own words on purpose: a mistranslation of
+   * a security fact is worse than a foreign word, and this is the one line on
+   * the card a reader must not misread. The shapes are matched by their stable
+   * prefix rather than in full, so the parenthesised detail the scanner
+   * attaches can change without falling back to English.
    */
   const redLineLabel = (line: string): string => {
     if (line === 'reads credentials/secrets AND has network access') return t('capRedCredentialsNetwork')
     const plaintext = /^uses plaintext http:\/\/ to (.+)$/.exec(line)
     if (plaintext !== null) return t('capRedPlaintextHttp').replace('{0}', plaintext[1]!)
+    const literalIp = /^uses literal IP (.+) for network access$/.exec(line)
+    if (literalIp !== null) return t('capRedLiteralIp').replace('{0}', literalIp[1]!)
+    const installScript = /^runs code at install time(?: \((.+)\))?$/.exec(line)
+    if (installScript !== null) {
+      return installScript[1] === undefined
+        ? t('capRedInstallScript')
+        : t('capRedInstallScriptScripts').replace('{0}', installScript[1])
+    }
+    const coreTamper = /^tampers with a core bundle(?: \((.+)\))?$/.exec(line)
+    if (coreTamper !== null) {
+      return coreTamper[1] === undefined
+        ? t('capRedCoreTamper')
+        : t('capRedCoreTamperDetail').replace('{0}', coreTamper[1])
+    }
     return line
   }
 
   /**
-   * What the plugin touches (#401), rendered the same way by both card
-   * renderers. The Discover card and the Themes card show the same plugin, so
-   * a fact that appears on one and not the other reads as a difference between
-   * the PLUGINS rather than between the cards.
+   * Whether a red line is one a reader has to weigh BEFORE installing, rather
+   * than a fact about what the plugin does once it runs.
+   *
+   * Two families qualify, for one reason: they happen at install time. There is
+   * no "afterwards" to inspect, so this is the last moment the decision can be
+   * made. The other families — credentials+network above all, 73% of every red
+   * line the catalog holds — describe what plugins normally do, and calling
+   * that urgent is how a warning gets trained away.
    */
-  const capabilityRow = (p: RegistryPlugin) => (
-    <div className={css.caps}>
-        <Tooltip label={t('capabilityNote')} side="top">
-          <span className={css.capsTitle}>{t('capabilityTitle')}</span>
-        </Tooltip>
-        {p.capabilityRedLines?.map(line => (
-          <span key={line} className={css.capRed}>{t('capabilityRedLine').replace('{0}', redLineLabel(line))}</span>
+  const redLineIsUrgent = (line: string): boolean =>
+    line.startsWith('runs code at install time') || line.startsWith('tampers with a core bundle')
+
+  /**
+   * What the static scan found (#401), in the detail dialog and nowhere else.
+   *
+   * It used to sit on both cards. It does not any more, for three reasons that
+   * all pointed the same way: a capability list does not help anyone choose a
+   * plugin, most of it cannot be acted on, and — the one that decided it — a
+   * line every card carries is a line nobody reads, including the install-time
+   * script that IS worth stopping for. So the card says nothing about this, the
+   * dialog leads with the one thing that needs a decision before you press
+   * install, and the rest of the facts are one click away.
+   *
+   * Which lines count as that one thing is `redLineIsUrgent`, not a guess made
+   * here: a rare rule that fires at install time, never a description of what
+   * plugins normally do.
+   */
+  const capabilityDetail = (p: RegistryPlugin) => {
+    const redLines = p.capabilityRedLines ?? []
+    return (
+      <>
+        {redLines.filter(redLineIsUrgent).map(line => (
+          <p key={line} className={css.warnLine}>
+            <IconWarningOutline16 size={14} className={css.bannerIcon} />
+            {' ' + redLineLabel(line)}
+          </p>
         ))}
-        {p.capabilities === undefined
-          ? (HostTag !== null
-              ? <HostTag tone="quiet" data-state="unchecked">{t('capabilityUnchecked')}</HostTag>
-              : <span className={css.capMuted} data-state="unchecked">{t('capabilityUnchecked')}</span>)
-          : p.capabilities.length === 0
-            ? (HostTag !== null
-                ? <HostTag tone="quiet" data-state="none">{t('capabilityNone')}</HostTag>
-                : <span className={css.capMuted} data-state="none">{t('capabilityNone')}</span>)
-            : p.capabilities.map(name => (HostTag !== null
-                ? <HostTag key={name} tone="outline" className={css.capChip}>{capabilityLabel(name)}</HostTag>
-                : <span key={name} className={css.capChip}>{capabilityLabel(name)}</span>
-              ))}
-        </div>)
+        <DisclosureRow
+          icon={<IconQuestionOutline14 size={16} />}
+          title={t('capabilityTitle')}
+          open={capsOpen}
+          expandable
+          expandOnRowClick
+          onToggle={() => setCapsOpen(o => !o)}
+        >
+          <div className={css.caps}>
+            {p.capabilities === undefined
+              ? <span className={css.capMuted} data-state="unchecked">{t('capabilityUnchecked')}</span>
+              : p.capabilities.length === 0
+                ? <span className={css.capMuted} data-state="none">{t('capabilityNone')}</span>
+                : p.capabilities.map(name => (HostTag !== null
+                    ? <HostTag key={name} tone="outline" className={css.capChip}>{capabilityLabel(name)}</HostTag>
+                    : <span key={name} className={css.capChip}>{capabilityLabel(name)}</span>
+                  ))}
+            {redLines.filter(line => !redLineIsUrgent(line)).map(line => (
+              <span key={line} className={css.capFact}>{redLineLabel(line)}</span>
+            ))}
+          </div>
+          <p className={css.capCaveat}>{t('capabilityNote')}</p>
+          {typeof p.capabilityCheckedAt === 'string' && p.capabilityCheckedAt.length > 0 && (
+            <p className={css.capCaveat}>{t('capabilityScannedAt').replace('{0}', p.capabilityCheckedAt.slice(0, 10))}</p>
+          )}
+        </DisclosureRow>
+      </>
+    )
+  }
 
   /**
    * The enable/disable control, wherever it appears — the installed row, a
@@ -4138,10 +4197,6 @@ export function MarketSection(props: MarketSectionProps) {
             </div>
           </div>
         )}
-        {/* Capability disclosure (#401): facts on the card, never a badge.
-            Three states, because they are three different sentences —
-            capabilities detected, nothing detected, and never looked at. */}
-{capabilityRow(p)}
         <div className={css.foot}>
           <div className={css.footTags}>
             <span
@@ -4248,7 +4303,6 @@ export function MarketSection(props: MarketSectionProps) {
           </div>
 
           <p className={css.themeDescription} title={desc}>{desc}</p>
-          {capabilityRow(p)}
 
           {p.deprecated === true && (
             <div className={css.deprecate}>
@@ -6041,6 +6095,7 @@ export function MarketSection(props: MarketSectionProps) {
               description, then screenshots. */}
           <CardDesc text={(confirming.description && (confirming.description[lang] || confirming.description.en)) || ''} t={t} />
           <ScreenshotStrip plugin={confirming} onOpen={openLightbox} />
+          {capabilityDetail(confirming)}
           <DisclosureRow
             icon={<IconCodeOutline16 size={16} />}
             title={t('cmdDetails')}

@@ -3316,7 +3316,9 @@ describe('local-dev restore', () => {
     expect(await screen.findByText((content: string) => content.includes(en.restoreNameOnlyHint.slice(0, 40)))).toBeTruthy()
     // The owner is on screen to be checked against, not buried in a link.
     expect(await screen.findByText((content: string) => content.includes('lynote-ai'))).toBeTruthy()
-    expect(screen.queryByText((content: string) => content.includes(en.restoreHint.slice(0, 32)))).toBeNull()
+    // A distinctive PHRASE, not a prefix: the name-only hint quotes the plain
+    // one's first sentence verbatim, so a prefix match cannot tell them apart.
+    expect(screen.queryByText((content: string) => content.includes('installs the online version'))).toBeNull()
   })
 
   it('asks in a modal before swapping a linked plugin to the catalog', async () => {
@@ -3728,11 +3730,15 @@ describe('a queued operation only runs while it still applies (#523)', () => {
 
 describe('capability disclosure (#401)', () => {
   /**
-   * Facts on the card, never a badge: what the scanner detected is listed,
-   * what it did not detect is said in the scanner's own terms, and an entry
-   * nobody looked at says so instead of looking clean. The three states are
-   * the point of these tests — a single "no chips" rendering would make
-   * "nothing found" and "never scanned" the same card.
+   * The scan result lives in the detail dialog and nowhere else.
+   *
+   * It used to sit on both cards. It moved because a line every card carries is
+   * a line nobody reads — and the one line worth stopping for (a script that
+   * runs as you install) was lost among the ones that only describe what
+   * plugins normally do. So these tests hold four things: the card is silent,
+   * the dialog leads with the install-time warning, the ordinary facts are one
+   * click away with the blind spots printed beside them, and the three states
+   * ("detected", "nothing found", "never scanned") stay three sentences.
    */
   const base = {
     name: 'dsh-probe-target', owner: 'alice', url: 'https://github.com/alice/dsh-probe-target',
@@ -3747,130 +3753,127 @@ describe('capability disclosure (#401)', () => {
     })
   }
 
-  it('lists what was detected, and names the red line in the reader language', async () => {
+  /** Open the card's install dialog — where the disclosure now lives. */
+  async function openDetail() {
+    let card: HTMLElement | null = screen.getByText('dsh-probe-target')
+    while (card !== null && within(card).queryAllByRole('button', { name: en.install }).length === 0) card = card.parentElement
+    fireEvent.click(within(card!).getAllByRole('button', { name: en.install })[0]!)
+    await screen.findByRole('button', { name: en.confirmInstall })
+    return within(screen.getByRole('dialog'))
+  }
+
+  it('says nothing about the scan on the card — not the facts, not the warning', async () => {
+    withEntry({
+      capabilities: ['shell', 'network'],
+      capabilityRedLines: ['reads credentials/secrets AND has network access', 'runs code at install time (postinstall)'],
+      capabilityCheckedAt: '2026-09-24T12:00:00Z',
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-probe-target')
+    expect(screen.queryByText(en.capabilityTitle)).toBeNull()
+    expect(screen.queryByText(en.capShell)).toBeNull()
+    expect(screen.queryByText(en.capRedCredentialsNetwork)).toBeNull()
+    expect(screen.queryByText(en.capRedInstallScriptScripts.replace('{0}', 'postinstall'))).toBeNull()
+  })
+
+  it('shows the same nothing on the Themes card as on the Discover card', async () => {
+    withEntry({ category: 'theme', capabilities: ['shell', 'network'], capabilityRedLines: [] })
+    render(<MarketSection {...props()} preferredSubsectionId="themes" />)
+    await screen.findAllByText('dsh-probe-target')
+    expect(screen.queryByText(en.capabilityTitle)).toBeNull()
+    expect(screen.queryByText(en.capShell)).toBeNull()
+  })
+
+  it('leads the dialog with the install-time script, and keeps the rest one click away', async () => {
     withEntry({
       capabilities: ['shell', 'fs-write', 'network', 'credentials'],
-      capabilityRedLines: ['reads credentials/secrets AND has network access'],
+      capabilityRedLines: ['reads credentials/secrets AND has network access', 'runs code at install time (postinstall)'],
       capabilityCheckedAt: '2026-09-24T12:00:00Z',
     })
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-probe-target')
-    expect(screen.getByText(en.capabilityTitle)).toBeTruthy()
-    expect(screen.getByText(en.capShell)).toBeTruthy()
-    expect(screen.getByText(en.capFsWrite)).toBeTruthy()
-    expect(screen.getByText(en.capNetwork)).toBeTruthy()
-    expect(screen.getByText(en.capCredentials)).toBeTruthy()
-    // This host (0.1.0-rc.7) has no `Tag`, so the market renders its own
-    // markup — the fallback half of "use the host's component when it has
-    // one". tests/client/optional-primitives.client.spec.tsx covers the other.
-    expect(screen.getByText(en.capShell).tagName).toBe('SPAN')
-    // The one loud element on the card.
-    expect(screen.getByText(en.capabilityRedLine.replace('{0}', en.capRedCredentialsNetwork))).toBeTruthy()
-    // …and never the words that would turn disclosure into a verdict.
-    expect(screen.queryByText(/safe/i)).toBeNull()
+    const dialog = await openDetail()
+
+    // The one line this dialog shows before being asked: it fires during the
+    // install itself, so there is no afterwards in which to notice it.
+    expect(dialog.getByText(en.capRedInstallScriptScripts.replace('{0}', 'postinstall'))).toBeTruthy()
+    // Everything else waits — including the family that is 73% of all red
+    // lines, whose alarm would train the reader past the one that matters.
+    expect(dialog.queryByText(en.capRedCredentialsNetwork)).toBeNull()
+    expect(dialog.queryByText(en.capShell)).toBeNull()
+    expect(dialog.queryByText(en.capabilityNote)).toBeNull()
+
+    fireEvent.click(dialog.getByText(en.capabilityTitle))
+    expect(dialog.getByText(en.capShell)).toBeTruthy()
+    expect(dialog.getByText(en.capFsWrite)).toBeTruthy()
+    expect(dialog.getByText(en.capRedCredentialsNetwork)).toBeTruthy()
+    expect(dialog.getByText(en.capabilityNote)).toBeTruthy()
+    expect(dialog.getByText(en.capabilityScannedAt.replace('{0}', '2026-09-24'))).toBeTruthy()
+    // Disclosure, never verdict.
+    expect(dialog.queryByText(/^safe$/i)).toBeNull()
   })
 
-/** Stable identity — useSyncExternalStore reads a fresh object as a change. */
-const THEME_SNAPSHOT = { preference: 'light', themes: [] as Array<{ id: string }> }
-
-  it('renders the market own switch on a host without the primitives Switch', async () => {
-    // 0.1.0-rc.7 has no `Switch`, so this is the fallback half. (The host half
-    // is tests/client/optional-primitives.client.spec.tsx.) Nothing asserted
-    // this control at all before — the installed row's switch had no test.
-    stubFetch({
-      '/dsh-market/installed': {
-        profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [],
-        activation: { 'dsh-loop': { state: 'live' } },
-      },
-    })
-    render(<MarketSection {...props()} preferredSubsectionId="installed" />)
-    await screen.findAllByText('dsh-loop')
-    const control = screen.getByRole('switch', { name: 'Disable dsh-loop' })
-    expect(control.getAttribute('aria-checked')).toBe('true')
-    expect(control.className).toMatch(/(^|_)switch+/u)
-  })
-
-  it('shows the same facts on the Themes card as on the Discover card', async () => {
-    // Two renderers draw the same plugin: the masonry card in Discover and the
-    // gallery card in Themes. A fact on one and not the other reads as a
-    // difference between the PLUGINS, so the row is shared, not re-written.
-    withEntry({
-      category: 'theme',
-      capabilities: ['shell', 'network'],
-      capabilityRedLines: ['reads credentials/secrets AND has network access'],
-      capabilityCheckedAt: '2026-09-24T12:00:00Z',
-    })
-    // A theme snapshot is what makes the Themes TAB exist at all: the tab is
-    // rendered only when the host has a theme service, and `props()` alone
-    // leaves it out.
-    const { container } = render(<MarketSection {...props()}
-      themeStore={{ subscribe: () => () => {}, getSnapshot: () => THEME_SNAPSHOT }} />)
+  it('translates every rule family the scanner can emit', async () => {
+    // Five shapes, one per family. Two of them used to fall through to the
+    // scanner's English on a Chinese card.
+    const families: Array<[string, string]> = [
+      ['reads credentials/secrets AND has network access', en.capRedCredentialsNetwork],
+      ['uses plaintext http:// to schemas.example.org', en.capRedPlaintextHttp.replace('{0}', 'schemas.example.org')],
+      ['uses literal IP 169.254.169.254 for network access', en.capRedLiteralIp.replace('{0}', '169.254.169.254')],
+      ['runs code at install time (postinstall, preinstall)', en.capRedInstallScriptScripts.replace('{0}', 'postinstall, preinstall')],
+      ['tampers with a core bundle (dsh-base)', en.capRedCoreTamperDetail.replace('{0}', 'dsh-base')],
+    ]
+    withEntry({ capabilities: ['network'], capabilityRedLines: families.map(([line]) => line) })
+    render(<MarketSection {...props()} />)
     await screen.findByText('dsh-probe-target')
-    // Discover: the masonry card carries the row.
-    const masonry = container.querySelector('[class*="masonryCol"]') as HTMLElement
-    expect(within(masonry).getByText(en.capShell)).toBeTruthy()
-
-    // The tab, not the category pill of the same name: both are buttons with
-    // that label, and only one of them switches the tab.
-    const themeTab = screen.getAllByRole('button', { name: re(en.tabThemes) })
-      .find(button => /(^|_)tab(_|$)/u.test(button.className))
-    expect(themeTab, 'no tab button named Themes').toBeTruthy()
-    fireEvent.click(themeTab!)
-    await screen.findByRole('button', { name: en.install })
-    // Themes: the GALLERY card carries the same row — scoped to the gallery,
-    // because both tabs stay mounted and an unscoped query would find the
-    // Discover card and pass whether or not the theme card renders anything.
-    const gallery = container.querySelector('[class*="themeCard"]') as HTMLElement
-    expect(within(gallery).getByText(en.capShell)).toBeTruthy()
-    expect(within(gallery).getByText(en.capNetwork)).toBeTruthy()
-    expect(within(gallery).getByText(en.capabilityRedLine.replace('{0}', en.capRedCredentialsNetwork))).toBeTruthy()
+    const dialog = await openDetail()
+    for (const [, label] of families) {
+      if (label === en.capRedInstallScriptScripts.replace('{0}', 'postinstall, preinstall')) {
+        expect(dialog.getByText(label)).toBeTruthy()
+      }
+    }
+    fireEvent.click(dialog.getByText(en.capabilityTitle))
+    for (const [, label] of families) expect(dialog.getByText(label)).toBeTruthy()
   })
 
-  it('says the blind spots out loud, next to the chips', async () => {
-    // The copy is load-bearing: a scan that cannot see node_modules,
-    // runtime-assembled URLs or dynamic imports must not read as clearance.
+  it('separates "nothing found" from "never scanned"', async () => {
     withEntry({ capabilities: [], capabilityRedLines: [] })
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-probe-target')
-    expect(en.capabilityNote).toContain('not “safe”')
-    expect(en.capabilityNote).toContain('node_modules')
-    expect(zh.capabilityNote).toContain('不等于安全')
-  })
+    let dialog = await openDetail()
+    fireEvent.click(dialog.getByText(en.capabilityTitle))
+    expect(dialog.getByText(en.capabilityNone)).toBeTruthy()
+    expect(dialog.queryByText(en.capabilityUnchecked)).toBeNull()
+    cleanup()
 
-  it('separates "nothing detected" from "never scanned"', async () => {
-    withEntry({ capabilities: [], capabilityRedLines: [] })
-    const { unmount } = render(<MarketSection {...props()} />)
-    await screen.findByText('dsh-probe-target')
-    expect(screen.getByText(en.capabilityNone)).toBeTruthy()
-    expect(screen.queryByText(en.capabilityUnchecked)).toBeNull()
-    unmount()
-
-    // No fields at all: the catalog never scanned this entry. Same absence,
-    // different sentence — this one is about us, not about the plugin.
     withEntry({})
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-probe-target')
-    expect(screen.getByText(en.capabilityUnchecked)).toBeTruthy()
-    expect(screen.queryByText(en.capabilityNone)).toBeNull()
+    dialog = await openDetail()
+    fireEvent.click(dialog.getByText(en.capabilityTitle))
+    expect(dialog.getByText(en.capabilityUnchecked)).toBeTruthy()
+    expect(dialog.queryByText(en.capabilityNone)).toBeNull()
   })
 
   it('shows a capability name this build has no label for, rather than dropping it', async () => {
-    // The scanner's vocabulary can grow between releases (`dynamic-code` did).
-    // A chip that vanished because the label was missing would read as "does
-    // not do that" — the one failure mode a disclosure must not have. A name
-    // WITH a label is translated; one without shows as itself.
+    // An unlabelled fact is still a fact: a missing chip would read as "does
+    // not do that" — the one failure mode a disclosure must not have.
     withEntry({ capabilities: ['dynamic-code', 'writes-clipboard'], capabilityRedLines: [] })
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-probe-target')
-    expect(screen.getByText(en.capDynamicCode)).toBeTruthy()
-    expect(screen.getByText('writes-clipboard')).toBeTruthy()
+    const dialog = await openDetail()
+    fireEvent.click(dialog.getByText(en.capabilityTitle))
+    expect(dialog.getByText(en.capDynamicCode)).toBeTruthy()
+    expect(dialog.getByText('writes-clipboard')).toBeTruthy()
   })
 
   it('leaves a red line it cannot translate in the scanner own words', async () => {
     withEntry({ capabilities: ['network'], capabilityRedLines: ['POSTs telemetry to a collector'] })
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-probe-target')
-    expect(screen.getByText(en.capabilityRedLine.replace('{0}', 'POSTs telemetry to a collector'))).toBeTruthy()
+    const dialog = await openDetail()
+    fireEvent.click(dialog.getByText(en.capabilityTitle))
+    expect(dialog.getByText('POSTs telemetry to a collector')).toBeTruthy()
   })
 })
 
@@ -4904,7 +4907,8 @@ describe('card thumbnail + lightbox (curated screenshots only)', () => {
     fireEvent.click(within(card!).getAllByRole('button', { name: en.install })[0]!)
     await screen.findByRole('button', { name: en.confirmInstall })
     const dialog = within(screen.getByRole('dialog'))
-    expect(dialog.getByText(/npm rolling 30-day downloads: 4200/).textContent).toContain('not lifetime downloads or unique users')
+    expect(dialog.getByText(/npm rolling 30-day downloads: 4200/).textContent?.toLowerCase())
+      .toContain('not lifetime downloads or unique users')
     expect(dialog.getByText(/Source checked at: 2026-09-24/)).toBeTruthy()
   })
 

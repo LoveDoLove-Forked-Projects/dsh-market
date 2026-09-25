@@ -9,7 +9,7 @@
  * host without it still renders the same facts.
  */
 import type { ReactNode } from 'react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async (importOriginal) => ({
@@ -69,6 +69,12 @@ describe('capability chips on a host that has Tag', () => {
   it('renders them with the host component, not the market own markup', async () => {
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-tagged')
+    // The chips live behind the detail dialog's disclosure now, not on the card.
+    let card: HTMLElement | null = screen.getByText('dsh-tagged')
+    while (card !== null && within(card).queryAllByRole('button', { name: en.install }).length === 0) card = card.parentElement
+    fireEvent.click(within(card!).getAllByRole('button', { name: en.install })[0]!)
+    await screen.findByRole('button', { name: en.confirmInstall })
+    fireEvent.click(within(screen.getByRole('dialog')).getByText(en.capabilityTitle))
     const shell = screen.getByText(en.capShell)
     expect(shell.getAttribute('data-host-tag')).toBe('outline')
     expect(screen.getByText(en.capNetwork).getAttribute('data-host-tag')).toBe('outline')

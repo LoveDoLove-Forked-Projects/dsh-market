@@ -17,8 +17,18 @@ describe('download statistic disclosure', () => {
       expect(text).toContain(stats.downloadsCheckedAt)
       expect(text).not.toContain('12.3k')
     }
-    expect(downloadStatsText(stats, english)).toContain('not lifetime downloads or unique users')
-    expect(downloadStatsText(stats, chinese)).toContain('非累计下载量')
+    // Compared against the copy's own template, not a phrase copied out of it:
+    // a wording change must not be able to fail this test, only a wiring change.
+    expect(downloadStatsText(stats, english)).toBe(
+      en.downloadsMeaning.replace('{0}', '12345')
+      + ' ' + en.downloadsWindow.replace('{0}', stats.downloadsStart).replace('{1}', stats.downloadsEnd)
+      + ' ' + en.downloadsChecked.replace('{0}', stats.downloadsCheckedAt),
+    )
+    expect(downloadStatsText(stats, chinese)).toBe(
+      zh.downloadsMeaning.replace('{0}', '12345')
+      + ' ' + zh.downloadsWindow.replace('{0}', stats.downloadsStart).replace('{1}', stats.downloadsEnd)
+      + ' ' + zh.downloadsChecked.replace('{0}', stats.downloadsCheckedAt),
+    )
   })
 
   it('retains zero and does not fabricate dates for legacy counts', () => {
