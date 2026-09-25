@@ -307,6 +307,53 @@ describe('checkUpdates — private git hosts (#525)', () => {
     })
   })
 
+  it('reads the peeled commit of an annotated tag, not the tag object (#723)', async () => {
+    // A tag-pinned git install advertises the tag OBJECT on `refs/tags/<t>` and
+    // the COMMIT on `refs/tags/<t>^{}`. pnpm's lockfile records the commit, so
+    // resolving the tag object can never equal it: the row claims an update
+    // forever, and applying it reinstalls the same commit and reports "version
+    // did not change". #597 fixed this on the GitHub path; the smart-HTTP path
+    // used by self-hosted git still matched the tag object first.
+    const tagObject = '769ec5e093fb58d694fa8db09a5d555469646b49'
+    const commit = 'a3341ec2b28e3fb3b5fc3569012fc39acacc9fb2'
+    const gitea = 'git+https://gitea.example.com/me/themer.git#v1.0.0'
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('registry.npmjs.org')) {
+        return { ok: true, status: 200, json: async () => ({}), text: async () => '' }
+      }
+      return {
+        ok: true, status: 200,
+        headers: { get: () => 'application/x-git-upload-pack-advertisement' },
+        json: async () => ({}),
+        text: async () => `001e# service=git-upload-pack\n0000`
+          + `003f${tagObject} refs/tags/v1.0.0\n`
+          + `003f${commit} refs/tags/v1.0.0^{}\n`,
+      }
+    }))
+    const result = await checkUpdates('web', true, profileWith(gitea, commit))
+    expect(result.themer).toMatchObject({ kind: 'github', current: commit, latest: commit, updateAvailable: false })
+  })
+
+  it('still resolves a lightweight tag, which advertises no peeled ref', async () => {
+    // The other half of the same contract: preferring `^{}` must not lose the
+    // tag that has none.
+    const commit = 'a3341ec2b28e3fb3b5fc3569012fc39acacc9fb2'
+    const gitea = 'git+https://gitea.example.com/me/themer.git#v1.0.0'
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('registry.npmjs.org')) {
+        return { ok: true, status: 200, json: async () => ({}), text: async () => '' }
+      }
+      return {
+        ok: true, status: 200,
+        headers: { get: () => 'application/x-git-upload-pack-advertisement' },
+        json: async () => ({}),
+        text: async () => `001e# service=git-upload-pack\n0000` + `003f${commit} refs/tags/v1.0.0\n`,
+      }
+    }))
+    const result = await checkUpdates('web', true, profileWith(gitea, 'ffffffffffffffffffffffffffffffffffffffff'))
+    expect(result.themer).toMatchObject({ current: 'ffffffffffffffffffffffffffffffffffffffff', latest: commit, updateAvailable: true })
+  })
+
   it('treats a bare https Gitea remote (no .git suffix) as git, not npm (#525)', async () => {
     const gitea = 'https://gitea.example.com/me/themer'
     let npmHits = 0
