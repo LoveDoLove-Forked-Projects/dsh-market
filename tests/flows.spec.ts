@@ -3998,6 +3998,34 @@ describe('theme flow', () => {
     expect(hot.disabled.has('theme-a')).toBe(false)
   })
 
+  it('puts the previous theme back when the new one cannot start (#582)', async () => {
+    // theme-b is live from the setup above, and switching stops it first —
+    // themes are mutually exclusive by construction. So a switch whose new
+    // theme fails to mount used to leave the user with NO theme at all: the
+    // old one stopped, the new one never started, and the Themes tab listed
+    // the plugin as enabled while the interface had lost its skin. The
+    // reported assertion for this was simply "the previous theme's fiber is
+    // undefined".
+    expect(hot.mounts).toEqual(['theme-b'])
+    hot.failNext = true
+    const failed = await bed.dispatch('POST', '/dsh-market/use-skin', { name: 'theme-a' })
+    expect(failed.status).toBe(502)
+    expect(failed.json.ok).toBe(false)
+    // The theme that was live is live again…
+    expect(hot.mounts).toEqual(['theme-b'])
+    // …and the disable flag follows what actually came back: theme-b is not
+    // disabled (it is the active one), theme-a is not either (it never
+    // started, so the next attempt must be allowed to try it again).
+    expect(hot.disabled.has('theme-b')).toBe(false)
+    expect(hot.disabled.has('theme-a')).toBe(false)
+
+    // The chatty path works once the host can mount again.
+    const ok = await bed.dispatch('POST', '/dsh-market/use-skin', { name: 'theme-a' })
+    expect(ok.status).toBe(200)
+    expect(hot.mounts).toEqual(['theme-a'])
+    expect(hot.disabled.has('theme-b')).toBe(true)
+  })
+
   it('rejects use-skin for non-theme or uninstalled packages', async () => {
     expect((await bed.dispatch('POST', '/dsh-market/use-skin', { name: 'dsh-loop' })).status).toBe(400)
     expect((await bed.dispatch('POST', '/dsh-market/use-skin', { name: 'ghost' })).status).toBe(400)

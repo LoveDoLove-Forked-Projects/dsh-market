@@ -138,22 +138,49 @@ export function createThemeManager(
    * (market hot mounts unmount; bundle-layer entries live-disable) and bring
    * it up. The choice persists in state.json and is replayed at boot.
    */
+  /**
+   * Make `name` the one active theme.
+   *
+   * Switching stops every other theme first, because they are mutually
+   * exclusive by construction. That makes the failure case the interesting
+   * one: if the new theme then cannot come up, the user is left with NO theme
+   * — the old one stopped, the new one never started, and the tab shows the
+   * plugin as enabled while the interface has lost its skin (#582, where the
+   * reported assertion was simply "the previous theme's fiber is undefined").
+   *
+   * So what this stopped is remembered, and a failed switch puts it back —
+   * both the live fiber and the disable flag that followed it. The attempted
+   * theme keeps neither: it never came up, and leaving it out of the disable
+   * set is what lets the next attempt try it again.
+   */
   async function activateTheme(name: string): Promise<boolean> {
     const themes = await installedThemeNames()
+    const stopped: { name: string; kind: 'hot' | 'entry' }[] = []
     for (const other of themes) {
       if (other === name) continue
       if (listHotMounts().includes(other)) {
-        await hotUnmount(other)
+        if (await hotUnmount(other)) stopped.push({ name: other, kind: 'hot' })
         disabledThemes.add(other)
       } else if (await setEntryDisabled(other, true)) {
+        stopped.push({ name: other, kind: 'entry' })
         disabledThemes.add(other)
       }
     }
     disabledThemes.delete(name)
     writeDisabled(activeProfileDir, disabledThemes)
-    if (listHotMounts().includes(name)) return true
-    if (await setEntryDisabled(name, false)) return true
-    return (await hotMount(host, activeProfileDir, name)).ok
+    const live = listHotMounts().includes(name)
+      || await setEntryDisabled(name, false)
+      || (await hotMount(host, activeProfileDir, name)).ok
+    if (live) return true
+    for (const previous of stopped) {
+      const back = previous.kind === 'hot'
+        ? (await hotMount(host, activeProfileDir, previous.name)).ok
+        : await setEntryDisabled(previous.name, false)
+      if (back) disabledThemes.delete(previous.name)
+      else logEvent('warn', 'theme', `${previous.name}: could not be restored after ${name} failed to start`)
+    }
+    writeDisabled(activeProfileDir, disabledThemes)
+    return false
   }
 
   return { installedThemeNames, setEntryDisabled, activateTheme }
