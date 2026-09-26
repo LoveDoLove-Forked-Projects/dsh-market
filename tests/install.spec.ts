@@ -12,7 +12,7 @@ import type { InstallResult } from '../src/dsh-cli.ts'
 import {
   diagnosticsTail, failureDetail, FETCH_TIMEOUT_OVERRIDE, groupConflictsByOwner, hostNodeModulesRoot, isStaleUpdate, normalizedLinkTarget,
   parseIgnoredBuilds, parsePrepareNotAllowed, pnpmNeverStarted, removeDanglingHostBridge, retargetCollections,
-  validateAddedPlugins, withHoistRecovery,
+  RELEASE_AGE_OVERRIDE, validateAddedPlugins, withHoistRecovery,
 } from '../src/install.ts'
 import { dropUnparseableBuildKeys, profileDir } from '../src/profile.ts'
 import { canCreateSymlink } from './symlink-support.ts'
@@ -483,6 +483,62 @@ describe('withHoistRecovery', () => {
     expect(result.stderr).toContain('pnpm --version')
     expect(result.stderr).not.toContain('\ufffd')
     expect(result.stdout).toBe('')
+  })
+
+  // #732: the official Desktop bridge takes exactly `add <target>` or
+  // `remove <target>`, so every recovery that decorates the command with an
+  // option has to be left out there instead of sent and refused.
+  const AGE_VIOLATION_STDERR = '[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification'
+
+  it('sends no market option to a host that does not accept them (#732)', async () => {
+    const calls: string[][] = []
+    const run = async (_profile: string, args: string[]): Promise<InstallResult> => {
+      calls.push(args)
+      return { exitCode: 1, timedOut: false, stdout: '', stderr: AGE_VIOLATION_STDERR, cancelled: false }
+    }
+    const result = await withHoistRecovery(run, 'web', ['add', 'thing'], undefined, { marketFlags: false })
+    expect(result.exitCode).toBe(1)
+    // The one command, then only the orphan-store probe — never the override.
+    expect(calls).toEqual([['add', 'thing'], ['store', 'path']])
+    // And the message does not claim a retry that could not happen.
+    expect(result.stderr).toContain('没有自动重试')
+    expect(result.stderr).toContain(RELEASE_AGE_OVERRIDE)
+  })
+
+  it('still uses the one-shot override where the host accepts options', async () => {
+    const calls: string[][] = []
+    const run = async (_profile: string, args: string[]): Promise<InstallResult> => {
+      calls.push(args)
+      return { exitCode: 1, timedOut: false, stdout: '', stderr: AGE_VIOLATION_STDERR, cancelled: false }
+    }
+    await withHoistRecovery(run, 'web', ['add', 'thing'])
+    expect(calls[1]).toEqual(['add', RELEASE_AGE_OVERRIDE, 'thing'])
+  })
+
+  it('merges the shadowed duplicate exclude rules instead, and needs no option (#732)', async () => {
+    // pnpm appends a second rule for a package that already has one and then
+    // honours only the first, so its own new entry is dead and every later
+    // command in the profile fails verification. Merging is a repair of the
+    // file, so it works on the host that refuses options too.
+    const dir = writeProfile({})
+    const workspace = join(dir, 'pnpm-workspace.yaml')
+    writeFileSync(workspace, 'minimumReleaseAgeExclude:\n  - dshmarket@1.38.1 || 1.65.1\n  - dshmarket@1.65.4\n')
+    const calls: string[][] = []
+    let failFirst = true
+    const run = async (_profile: string, args: string[]): Promise<InstallResult> => {
+      calls.push(args)
+      if (failFirst) {
+        failFirst = false
+        return { exitCode: 1, timedOut: false, stdout: '', stderr: AGE_VIOLATION_STDERR, cancelled: false }
+      }
+      return ok
+    }
+    const result = await withHoistRecovery(run, 'web', ['add', 'dshmarket@1.65.4'], dir, { marketFlags: false })
+    expect(result.exitCode).toBe(0)
+    // The SAME argv is retried: the repair, not an option, is what unblocks it.
+    expect(calls[0]).toEqual(['add', 'dshmarket@1.65.4'])
+    expect(calls[1]).toEqual(['add', 'dshmarket@1.65.4'])
+    expect(readFileSync(workspace, 'utf8')).toBe('minimumReleaseAgeExclude:\n  - dshmarket@1.38.1 || 1.65.1 || 1.65.4\n')
   })
 })
 

@@ -357,6 +357,19 @@ export function mountMarketRoutes(
   // re-applies the same choice on every boot (ported from dsh-plugin-hub).
   const userPatchPath = findUserPatchPath(host, activeProfileDir)
   const commands: PluginCommandRuntime = commandRuntime ?? { runPlugin: runDshPlugin, probePnpm, provisionPnpm, cancelActive }
+  /**
+   * Whether this host runs pnpm itself and so takes the market's own options
+   * (`--config.*`, `--force`, `--no-frozen-lockfile`).
+   *
+   * The official Desktop bridge does not (#732): its in-process manager
+   * accepts exactly `add <target>` or `remove <target>` and answers anything
+   * else with exit 127. The market's recovery steps decorate commands with
+   * those options, so on such a host they have to be left out or rewritten as
+   * a bare exact target, instead of being sent and refused — which reported a
+   * supported operation as unsupported and sent the reporter looking for a
+   * broken profile.
+   */
+  const marketFlags = commands.acceptsMarketPnpmFlags !== false
   const supportsExactRollbackTarget = (target: string): boolean =>
     commands.supportsExactRollbackTarget?.(target) ?? TARGET_RE.test(target)
   // Point every plugin build/install spawn at the configured build
@@ -773,10 +786,36 @@ export function mountMarketRoutes(
   }
 
   /** Every plugin command goes through the pnpm-drift recovery wrapper (#20). */
-  const runPlugin = (profile: string, args: string[]) => withHoistRecovery(commands.runPlugin, profile, args, activeProfileDir)
+  const runPlugin = (profile: string, args: string[]) =>
+    withHoistRecovery(commands.runPlugin, profile, args, activeProfileDir, { marketFlags })
   /** The same, minus the release-age bypass: for a fresh install pinned to a young release (#594). */
   const runPluginKeepingReleaseAge = (profile: string, args: string[]) =>
-    withHoistRecovery(commands.runPlugin, profile, args, activeProfileDir, { releaseAgeBypass: false })
+    withHoistRecovery(commands.runPlugin, profile, args, activeProfileDir, { releaseAgeBypass: false, marketFlags })
+
+  /**
+   * The argv that rematerializes a restored manifest's build on this host.
+   *
+   * On a host that takes the market's options, one `pnpm install` does it. A
+   * host that runs pnpm itself — the official Desktop bridge (#732) — accepts
+   * only `add <target>` and refuses `install` outright, so there it is an
+   * `add` of the exact version the restored manifest pins, which is what that
+   * host's own manager pipeline materializes. A range is deliberately not
+   * usable: it would re-resolve to whatever is newest and call that the
+   * previous build.
+   *
+   * @returns null when nothing expressible is left, in which case the caller
+   *   reports that rather than sending a command the host will refuse.
+   */
+  function rematerializeArgs(name: string, pinned: string | undefined): string[] | null {
+    if (marketFlags) return ['--no-frozen-lockfile', RELEASE_AGE_OVERRIDE, 'install']
+    if (pinned !== undefined && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(pinned)) return ['add', `${name}@${pinned}`]
+    return null
+  }
+
+  /** Why a rematerialization could not even be attempted here (see above). */
+  function cannotRematerializeDetail(name: string, pinned: string | undefined): string {
+    return `这台宿主只接受按精确版本重新安装，「${name}」改动前在 profile 里写作 ${pinned ?? '（不在 profile 里）'}，市场无法在它上面重建上一版 / this host can only reinstall an exact version, and "${name}" was declared as ${pinned ?? '(not in the profile)'}, so the previous build cannot be rematerialized there`
+  }
 
   /**
    * Undo a clean-exit update whose new build cannot boot. Restoring only the
@@ -800,7 +839,14 @@ export function mountMarketRoutes(
     // Flags come BEFORE the command: preparePluginArgs treats the last arg as
     // the package target and rejects a trailing flag, while pnpm accepts the
     // same flags in front of `install`.
-    const reinstall = await runPlugin(config.profile, ['--no-frozen-lockfile', RELEASE_AGE_OVERRIDE, 'install'])
+    //
+    // On a host that runs pnpm itself neither flag exists and `install` is not
+    // accepted at all (#732), so there the build is rematerialized through the
+    // exact target — see `rematerializeArgs`.
+    const pinned = manifestBefore.dependencies[name]
+    const args = rematerializeArgs(name, pinned)
+    if (args === null) return { ok: false, detail: cannotRematerializeDetail(name, pinned) }
+    const reinstall = await runPlugin(config.profile, args)
     const ok = reinstall.exitCode === 0 && !reinstall.timedOut && !reinstall.cancelled
     if (ok) logEvent('info', 'update', `${name}: previous build rematerialized (${rolledBack.join(', ')})`)
     return { ok, detail: ok ? null : failureDetail(reinstall) }
@@ -962,7 +1008,16 @@ export function mountMarketRoutes(
     // were replaced before the rejected update failed. A normal exact add is
     // then an "already up to date" no-op; --force is what rematerializes the
     // captured version/commit/archive instead of blessing corrupted bytes.
-    const add = await runPlugin(config.profile, ['add', '--force', RELEASE_AGE_OVERRIDE, target])
+    //
+    // `--force` and the age override are market options, and the official
+    // Desktop bridge refuses them outright (#732). There the rollback is the
+    // bare exact target: the host's own manager pipeline is what installs it,
+    // and sending the options anyway failed the rollback with 127 — which
+    // read as "the previous build could not be verified" while node_modules
+    // still held the bad build.
+    const add = await runPlugin(config.profile, marketFlags
+      ? ['add', '--force', RELEASE_AGE_OVERRIDE, target]
+      : ['add', target])
     // Exact recovery targets deliberately pin versions/commits. Keep the
     // user's durable range, tag, floating github shortcut, or release URL.
     restoreProfileManifest(config.profile, manifestBefore, activeProfileDir)
@@ -3256,7 +3311,11 @@ sendJson(response, 200, { updates })
               restoreProfileManifest(config.profile, manifestBefore, activeProfileDir)
               const prepared = restoreProfileLockfile(lockfileBefore)
               if (!prepared.ok) return prepared
-              const reinstall = await runPlugin(config.profile, ['--no-frozen-lockfile', RELEASE_AGE_OVERRIDE, 'install'])
+              const reinstallArgs = rematerializeArgs(name, manifestBefore.dependencies[name])
+              if (reinstallArgs === null) {
+                return { ok: false, detail: cannotRematerializeDetail(name, manifestBefore.dependencies[name]) }
+              }
+              const reinstall = await runPlugin(config.profile, reinstallArgs)
               restoreProfileManifest(config.profile, manifestBefore, activeProfileDir)
               const finalLock = restoreProfileLockfile(lockfileBefore)
               if (!finalLock.ok) return finalLock
@@ -3727,9 +3786,16 @@ sendJson(response, 200, { updates })
             const reresolveInPlace = isGit && !restore && target === spec
             // force: the user chose to install a fresh release without the
             // default one-day safety wait; scoped to this single command.
+            //
+            // The override is a market option, so a host that runs pnpm itself
+            // does not take it (#732); there the plain form goes out and the
+            // host's own manager pipeline applies its release policy. That is
+            // the same trade the held-back fresh install already makes: the
+            // version the host admits now, with the newer one still offered by
+            // the update check.
             const addArgs = reresolveInPlace
-              ? (force ? ['update', RELEASE_AGE_OVERRIDE, name] : ['update', name])
-              : (force ? ['add', RELEASE_AGE_OVERRIDE, target] : ['add', target])
+              ? (force && marketFlags ? ['update', RELEASE_AGE_OVERRIDE, name] : ['update', name])
+              : (force && marketFlags ? ['add', RELEASE_AGE_OVERRIDE, target] : ['add', target])
             // Exact manifest snapshot for failure rollback (#65, #339) — the
             // host can write dependencies AND dsh.profile.bundles before a
             // hard-failed add, leaving residue that breaks the next boot.
@@ -5308,7 +5374,11 @@ sendJson(response, 200, { updates })
                 // the intent the fresh path otherwise refuses to assume it has
                 // (#594): the bypass is safe to use HERE because it is no
                 // longer the market's idea — it is what was clicked (#635).
-                const bypass = heldBack && force
+                // The bypass is an option this host may not accept (#732). Where
+                // it is not expressible the request falls to the same place as
+                // a refused bypass below: the bare name, with `heldByAge` set
+                // so the row says the profile's own age policy is why.
+                const bypass = heldBack && force && marketFlags
                 logEvent('warn', 'install', bypass
                   ? `${entry.name}: ${String(registryLatest)} is younger than this profile's minimumReleaseAge — installing it anyway, as asked, with ${RELEASE_AGE_OVERRIDE}`
                   : heldBack

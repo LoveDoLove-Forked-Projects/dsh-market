@@ -531,6 +531,19 @@ export interface PluginCommandRuntime {
   cancelActive(): boolean
   /** Whether this host can execute an immutable rollback add target. */
   supportsExactRollbackTarget?(target: string): boolean
+  /**
+   * Whether this runtime runs pnpm itself and therefore accepts the market's
+   * own arguments — `--config.*` overrides, `--force`, `--no-frozen-lockfile`.
+   *
+   * The official Electron profile does not (#732): its in-process manager
+   * takes exactly `add <target>` or `remove <target>` and answers any other
+   * argv with exit 127. Every recovery step that decorates a command with an
+   * option is impossible there, and sending it anyway turned a pnpm failure
+   * into "this desktop operation is not supported" — a message about an
+   * operation that is in fact supported, which sent the reporter looking for
+   * a broken profile instead of the option. Absent means "accepts".
+   */
+  acceptsMarketPnpmFlags?: boolean
 }
 
 /** One running package operation, however it was started. */

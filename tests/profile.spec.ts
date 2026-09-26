@@ -9,7 +9,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { resolveDshHome } from '../src/home-paths.ts'
 import {
-  addProfileBundle, conflictingEntryIds, dropFromManifest, entryArtifactExists, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, pluginSubdirs, profileDir,
+  addProfileBundle, conflictingEntryIds, dropFromManifest, entryArtifactExists, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, mergeDuplicateReleaseAgeExcludes, pluginSubdirs, profileDir,
   readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledRepoEvidence, readInstalledRepoIdentities, readInstalledVersion, readLockCommits,
   removeProfileBundle,
 } from '../src/profile.ts'
@@ -1009,5 +1009,71 @@ describe('removeProfileBundle / addProfileBundle', () => {
     expect(manifest.name).toBe('dsh-profile-web')
     expect(manifest.dependencies).toEqual({ dshmarket: '^1.0.0' })
     expect(manifest.dsh.profile.bundles).toEqual(['dshmarket'])
+  })
+})
+
+describe('mergeDuplicateReleaseAgeExcludes (#732)', () => {
+  function workspace(contents: string): string {
+    const dir = writeProfile({ name: 'dsh-profile-web', dependencies: {} })
+    writeFileSync(join(dir, 'pnpm-workspace.yaml'), contents)
+    return dir
+  }
+
+  it('merges one package\'s several rules into the union the file already declared', () => {
+    // pnpm appended the second rule when it let 1.65.4 through, then honoured
+    // only the first per name — so its own entry was shadowed and every later
+    // command in the profile failed lockfile verification.
+    const dir = workspace([
+      'packages:',
+      '  - .',
+      'minimumReleaseAgeExclude:',
+      '  - dshmarket@1.38.1 || 1.47.0 || 1.65.1',
+      '  - other@1.0.0',
+      '  - dshmarket@1.65.4',
+      '',
+    ].join('\n'))
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['dshmarket'])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe([
+      'packages:',
+      '  - .',
+      'minimumReleaseAgeExclude:',
+      '  - dshmarket@1.38.1 || 1.47.0 || 1.65.1 || 1.65.4',
+      '  - other@1.0.0',
+      '',
+    ].join('\n'))
+  })
+
+  it('leaves a file with no same-name duplicate exactly as it was', () => {
+    const original = 'minimumReleaseAgeExclude:\n  - a@1.0.0\n  - b@2.0.0\n'
+    const dir = workspace(original)
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(original)
+  })
+
+  it('collapses an identical duplicate line, and quotes a scoped name', () => {
+    const dir = workspace('minimumReleaseAgeExclude:\n  - @scope/pkg@1.0.0\n  - @scope/pkg@1.0.0\n')
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['@scope/pkg'])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8'))
+      .toBe("minimumReleaseAgeExclude:\n  - '@scope/pkg@1.0.0'\n")
+  })
+
+  it('does not touch a block it cannot read exactly', () => {
+    // A comment on an entry, or a flow list, is a line this cannot re-emit
+    // without losing something: leaving it alone beats guessing.
+    for (const contents of [
+      'minimumReleaseAgeExclude:\n  - a@1.0.0 # keep\n  - a@2.0.0\n',
+      'minimumReleaseAgeExclude: [a@1.0.0, a@2.0.0]\n',
+      'minimumReleaseAgeExclude:\n  - a@1.0.0\n  - a@\n',
+    ]) {
+      const dir = workspace(contents)
+      expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
+      expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(contents)
+    }
+  })
+
+  it('keeps a bare name meaning every version when it is one of the duplicates', () => {
+    const dir = workspace('minimumReleaseAgeExclude:\n  - pkg\n  - pkg@1.0.0\n')
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['pkg'])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe('minimumReleaseAgeExclude:\n  - pkg\n')
   })
 })

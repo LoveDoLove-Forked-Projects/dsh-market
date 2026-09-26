@@ -41,8 +41,17 @@ describe('official Electron profile runtime', () => {
   it('refuses another profile, absent service, and unsupported pnpm flags', async () => {
     const service = manager()
     const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    // The capability the route layer reads to stop decorating commands with
+    // options this host refuses (#732).
+    expect(runtime.acceptsMarketPnpmFlags).toBe(false)
     await expect(runtime.runPlugin('web', ['add', 'example'])).resolves.toMatchObject({ exitCode: 127 })
     await expect(runtime.runPlugin('desktop', ['add', '--force', 'example'])).resolves.toMatchObject({ exitCode: 127 })
+    // The OPERATION is supported; only the option is not — and the message
+    // has to say which, or the user goes looking for a broken profile (#732).
+    await expect(runtime.runPlugin('desktop', ['add', '--force', 'example']))
+      .resolves.toMatchObject({ exitCode: 127, stderr: expect.stringContaining('--force') })
+    await expect(runtime.runPlugin('desktop', ['add', '--force', 'example']))
+      .resolves.not.toMatchObject({ stderr: expect.stringContaining('this desktop operation is not supported') })
     await expect(runtime.runPlugin('desktop', ['install'])).resolves.toMatchObject({ exitCode: 127 })
     expect(service.installBundle).not.toHaveBeenCalled()
     const missing = createOfficialDesktopRuntime(() => undefined, 'desktop', profile())

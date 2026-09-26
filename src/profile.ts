@@ -1238,3 +1238,110 @@ export function dropUnparseableBuildKeys(profile: string, explicitDir?: string):
   writeAllowBuildsMap(file, yaml, map, blockRe, blockMatch)
   return removed
 }
+
+/** One `minimumReleaseAgeExclude` entry, split into its name and its versions. */
+interface ReleaseAgeExcludeRule {
+  name: string
+  /** The version union exactly as written, or null when the entry names no version. */
+  selector: string | null
+}
+
+/**
+ * Split `name@1.2.3 || 1.4.0` into its package name and selector.
+ *
+ * A scoped name begins with `@`, so the separator is the first `@` AFTER
+ * position 0; an entry with no `@` at all excludes every version of that
+ * name. Anything this cannot read exactly returns null, and the caller then
+ * leaves the file alone rather than rewriting a line it misread.
+ */
+function splitReleaseAgeExclude(entry: string): ReleaseAgeExcludeRule | null {
+  let text = entry.trim()
+  if (text.length >= 2
+    && (text[0] === "'" && text[text.length - 1] === "'" || text[0] === '"' && text[text.length - 1] === '"')) {
+    text = text.slice(1, -1)
+  }
+  const at = text.indexOf('@', text.startsWith('@') ? 1 : 0)
+  if (at === -1) return text === '' ? null : { name: text, selector: null }
+  const name = text.slice(0, at)
+  const selector = text.slice(at + 1).trim()
+  if (name === '' || selector === '') return null
+  return { name, selector }
+}
+
+/**
+ * Merge one package's several `minimumReleaseAgeExclude` entries into one
+ * (#732).
+ *
+ * pnpm 11.7.0 APPENDS an entry when it lets a version through a profile's
+ * `minimumReleaseAge` instead of folding it into the rule that already names
+ * that package — and its own `evaluateVersionPolicy` then honours only the
+ * FIRST rule per package name. The entry pnpm just wrote is therefore
+ * shadowed by the older one, the young version stays unexcluded, and pnpm
+ * fails lockfile verification with ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION on
+ * EVERY later command in that profile: installs, updates and uninstalls
+ * alike, including ones that have nothing to do with the package. Reported
+ * as #732, where the market's own self-update planted exactly that pair and
+ * every plugin operation on the desktop profile stopped working.
+ *
+ * Merging keeps the union of what the file already says, so nothing is
+ * loosened or tightened: the entries pnpm wrote were meant to be read, and
+ * after the merge they are. A file with no same-name duplicate is untouched,
+ * as is one whose block this cannot read exactly (a flow list, an inline
+ * comment, a line it would have to guess at).
+ *
+ * @returns the package names whose entries were merged; empty when the file
+ *   needed no repair or could not be repaired, in which case it is left
+ *   byte-for-byte as it was.
+ */
+export function mergeDuplicateReleaseAgeExcludes(profile: string, explicitDir?: string): string[] {
+  const file = join(profileDir(profile, explicitDir), 'pnpm-workspace.yaml')
+  let yaml: string
+  try { yaml = readFileSync(file, 'utf8') } catch { return [] }
+  // Block form only: `minimumReleaseAgeExclude:` then `- <entry>` lines.
+  const blockRe = /^minimumReleaseAgeExclude:[ \t]*\r?\n((?:[ \t]+-[^\r\n]*\r?\n?)*)/m
+  const block = blockRe.exec(yaml)
+  if (block === null) return []
+  const eol = /\r\n/.test(yaml) ? '\r\n' : '\n'
+  const indentMatch = /^([ \t]+)-/.exec(block[1])
+  const indent = indentMatch === null ? '  ' : indentMatch[1]
+  const entries: { rule: ReleaseAgeExcludeRule; quoted: boolean }[] = []
+  for (const line of block[1].split(/\r?\n/)) {
+    if (line.trim() === '') continue
+    const m = /^[ \t]+-[ \t]*(.*?)[ \t]*$/.exec(line)
+    // A `#` on the line is a comment this cannot re-emit without losing it.
+    if (m === null || m[1].includes('#')) return []
+    const rule = splitReleaseAgeExclude(m[1])
+    if (rule === null) return []
+    entries.push({ rule, quoted: /^['"]/.test(m[1]) })
+  }
+  const byName = new Map<string, { selectors: Set<string>; allVersions: boolean; quoted: boolean; count: number }>()
+  const order: string[] = []
+  for (const { rule, quoted } of entries) {
+    let group = byName.get(rule.name)
+    if (group === undefined) {
+      group = { selectors: new Set(), allVersions: false, quoted: false, count: 0 }
+      byName.set(rule.name, group)
+      order.push(rule.name)
+    }
+    group.count += 1
+    group.quoted = group.quoted || quoted
+    if (rule.selector === null) group.allVersions = true
+    else group.selectors.add(rule.selector)
+  }
+  const merged = order.filter(name => (byName.get(name)?.count ?? 0) > 1)
+  if (merged.length === 0) return []
+  const lines = order.map(name => {
+    const group = byName.get(name)
+    if (group === undefined) return ''
+    const text = group.allVersions ? name : `${name}@${[...group.selectors].join(' || ')}`
+    // `@` cannot start a plain scalar in YAML, so a scoped name is written
+    // quoted — the way pnpm itself writes one.
+    const quoted = group.quoted || text.startsWith('@')
+    return `${indent}- ${quoted ? `'${text.replaceAll("'", "''")}'` : text}`
+  })
+  const blockText = `minimumReleaseAgeExclude:${eol}${lines.join(eol)}${eol}`
+  // A function replacement: `$&` and friends in a string replacement would
+  // be read as capture references.
+  writeFileSync(file, yaml.replace(blockRe, () => blockText))
+  return merged
+}
