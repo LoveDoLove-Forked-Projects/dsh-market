@@ -3108,8 +3108,13 @@ describe('update flow — no npm publishing required', () => {
     expect(updated.status).toBe(200)
     expect(updated.json.compatibility).toMatchObject({ code: 'soft-incompatible' })
     expect(updated.json.compatibility.rollbackId).toBeUndefined()
-    expect(String(updated.json.compatibility.rollbackUnavailable)).toMatch(/pnpm-lock\.yaml does not match.*automatic rollback is unavailable/i)
+    // The message names all three versions — what was on disk, what the
+    // lockfile records, and what a rollback would reinstall (#732): the old
+    // wording said only that the lockfile "does not match", which left the
+    // user nothing to act on.
+    expect(String(updated.json.compatibility.rollbackUnavailable)).toMatch(/pnpm-lock\.yaml records 1\.2\.0.*automatic rollback is unavailable/i)
     expect(String(updated.json.compatibility.rollbackUnavailable)).toContain('v1.0.0')
+    expect(String(updated.json.compatibility.rollbackUnavailable)).toContain('dsh-loop@1.0.0')
     expect(String(updated.json.compatibility.rollbackUnavailable)).toContain(' / ')
   })
 

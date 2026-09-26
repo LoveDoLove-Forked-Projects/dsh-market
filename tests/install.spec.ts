@@ -515,6 +515,37 @@ describe('withHoistRecovery', () => {
     expect(calls[1]).toEqual(['add', RELEASE_AGE_OVERRIDE, 'thing'])
   })
 
+  it('repairs the shadowed rules even where the caller declined the bypass (#594)', async () => {
+    // The repair is not the bypass: it restores what the file already
+    // declares, so a caller that declined to relax the profile's age policy
+    // still gets the file fixed — and the command still runs unchanged.
+    const dir = writeProfile({})
+    const workspace = join(dir, 'pnpm-workspace.yaml')
+    writeFileSync(workspace, 'minimumReleaseAgeExclude:\n  - keep@1.0.0\n  - keep@2.0.0\n')
+    const calls: string[][] = []
+    const run = async (_profile: string, args: string[]): Promise<InstallResult> => {
+      calls.push(args)
+      return { exitCode: 1, timedOut: false, stdout: '', stderr: AGE_VIOLATION_STDERR, cancelled: false }
+    }
+    await withHoistRecovery(run, 'web', ['add', 'thing'], dir, { releaseAgeBypass: false })
+    expect(calls).toEqual([['add', 'thing'], ['add', 'thing'], ['store', 'path']])
+    expect(readFileSync(workspace, 'utf8')).toBe('minimumReleaseAgeExclude:\n  - keep@1.0.0 || 2.0.0\n')
+  })
+
+  it('leaves the policy alone when the caller declined the bypass and nothing was shadowed', async () => {
+    const dir = writeProfile({})
+    const workspace = join(dir, 'pnpm-workspace.yaml')
+    writeFileSync(workspace, 'minimumReleaseAgeExclude:\n  - keep@1.0.0\n')
+    const calls: string[][] = []
+    const run = async (_profile: string, args: string[]): Promise<InstallResult> => {
+      calls.push(args)
+      return { exitCode: 1, timedOut: false, stdout: '', stderr: AGE_VIOLATION_STDERR, cancelled: false }
+    }
+    await withHoistRecovery(run, 'web', ['add', 'thing'], dir, { releaseAgeBypass: false })
+    expect(calls).toEqual([['add', 'thing'], ['store', 'path']])
+    expect(readFileSync(workspace, 'utf8')).toBe('minimumReleaseAgeExclude:\n  - keep@1.0.0\n')
+  })
+
   it('merges the shadowed duplicate exclude rules instead, and needs no option (#732)', async () => {
     // pnpm appends a second rule for a package that already has one and then
     // honours only the first, so its own new entry is dead and every later

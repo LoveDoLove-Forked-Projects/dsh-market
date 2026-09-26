@@ -3866,7 +3866,15 @@ sendJson(response, 200, { updates })
                           && capturedNpmVersion(lockfileCapture.snapshot, name) !== beforeVersion
                           ? {
                               available: false,
-                              detail: `更新前安装的是 v${beforeVersion}，但 pnpm-lock.yaml 中的版本与它不一致，因此无法证明精确来源，自动回滚不可用。需要时请手工重新安装 ${name}@${beforeVersion}。 / The installed version before the update was v${beforeVersion}, but pnpm-lock.yaml does not match it, so the exact source cannot be proven and automatic rollback is unavailable. Reinstall ${name}@${beforeVersion} manually if needed.`,
+                              // Name all three: the version on disk, the version
+                              // the lockfile records, and the one a rollback
+                              // would install (#732). The old wording named the
+                              // first two only by implication, and a user who
+                              // reads "the exact source cannot be proven" has
+                              // nothing to act on — the reproducer's way out was
+                              // to align package.json with the installed build,
+                              // which is what this now says.
+                              detail: `更新前 node_modules 里装的是 v${beforeVersion}，但 pnpm-lock.yaml 里 ${name} 记的是 ${capturedNpmVersion(lockfileCapture.snapshot, name) ?? '（没有记录）'}，两者不一致，无法证明精确来源，因此自动回滚不可用（要回滚的是 ${name}@${beforeVersion}）。需要时请手工重新安装 ${name}@${beforeVersion}，或先把 package.json 与 pnpm-lock.yaml 对齐到 v${beforeVersion}。 / The build on disk before the update was v${beforeVersion}, but pnpm-lock.yaml records ${capturedNpmVersion(lockfileCapture.snapshot, name) ?? 'nothing'} for ${name}: they disagree, so the exact source cannot be proven and automatic rollback is unavailable. Reinstall ${name}@${beforeVersion} manually if needed, or align package.json and pnpm-lock.yaml with v${beforeVersion} first.`,
                               lockfileBefore: lockfileCapture.snapshot,
                             }
                           : !supportsExactRollbackTarget(`${name}@${beforeVersion}`)

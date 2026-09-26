@@ -162,22 +162,31 @@ export async function withHoistRecovery(
       }
     } else if (
       failure?.code === 'release-age-violation'
-      && options.releaseAgeBypass !== false
       && (pluginArgs[0] === 'add' || pluginArgs[0] === 'remove')
-      && !pluginArgs.includes(RELEASE_AGE_OVERRIDE)
     ) {
       // #732 first, because it is the breakage itself: pnpm appends a second
       // `minimumReleaseAgeExclude` rule for a package that already has one and
       // then honours only the FIRST per name, so its own new entry is shadowed
       // and verification fails for every later command in that profile.
+      //
       // Merging the duplicates repairs the file and needs no option at all, so
-      // it is the one recovery that also works on the desktop bridge.
+      // it is the one recovery that also works on the desktop bridge — and it
+      // runs however the bypass is set below, because it is a repair of what
+      // the file already declares, not a relaxation of the policy. A file that
+      // picks a rule that is already order-independent (a bare package name)
+      // keeps it: the merge keeps a bare name a bare name.
       const mergedDuplicates = mergeDuplicateReleaseAgeExcludes(profile, profileDirectory)
       if (mergedDuplicates.length > 0) {
         logEvent('warn', 'install', `pnpm appended a second minimumReleaseAgeExclude rule for ${mergedDuplicates.join(', ')} and honours only the first, shadowing its own entry (#732) — merged the duplicates and retrying once`)
         result = await run(profile, pluginArgs)
+      } else if (options.releaseAgeBypass === false) {
+        // The caller declined the bypass (#594), and the duplicates were not
+        // what failed: this violation is the profile's own policy doing its
+        // job, so the command stands as it is.
       } else if (!marketFlags) {
         unavailableOption = RELEASE_AGE_OVERRIDE
+      } else if (pluginArgs.includes(RELEASE_AGE_OVERRIDE)) {
+        // Already carrying it (a caller's forced retry): nothing left to add.
       } else {
         logEvent('warn', 'install', `a too-young release blocks pnpm's lockfile verification (#39) — retrying once with ${RELEASE_AGE_OVERRIDE}`)
         result = await run(profile, [pluginArgs[0], RELEASE_AGE_OVERRIDE, ...pluginArgs.slice(1)])
