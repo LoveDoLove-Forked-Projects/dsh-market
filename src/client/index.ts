@@ -245,15 +245,22 @@ export function apply(ctx: MarketClientContext): void {
     ? null
     : h(SettingsCard, { t, onRemoved: () => { sectionGate.retire() } })))
 
-  // The seat on the 0.1.7 line (#722). That release moved a plugin's
-  // configuration off the settings list and into the Plugins section: the
-  // `settingsScope` service and the `settings.plugin.item` slot that hung off
-  // it are gone, and `settings.plugins.tab` is what its slot contract offers —
-  // "one page inside the Plugins settings section", rendered as a tab beside
-  // the host's own. Without it the market had NO card on that line at all: the
-  // `plugins.bundle.config` registration above never fires, because no host
-  // declares that slot, and a registration into a slot nobody declares is
-  // silent by construction. Reported as "the settings card disappeared".
+  // The seat on the 0.1.7 line (#722). That release renamed the client's
+  // `settingsScope` service to `settings`, so the nested inject above stopped
+  // firing and `settings.plugin.item` — the settings-list card — went silent
+  // with no error anywhere. `settings.plugins.tab` is what that line's slot
+  // contract offers instead: "one page inside the Plugins settings section",
+  // rendered as a tab beside the host's own. Reported as "the settings card
+  // disappeared".
+  //
+  // This does not replace the `plugins.bundle.config` registration above, and
+  // that one did not stop firing: 0.1.7 declares it (`ui-plugin-manager` — "a
+  // bundle's own configuration, keyed by the bundle's package name and
+  // rendered on the bundle's page"), so the market's card is also on the
+  // market bundle's page in the Plugins section. BOTH seats are deliberate:
+  // the tab is where a user opens the market's settings from that section, the
+  // bundle page is where the plugin manager shows them for the installed
+  // bundle. Keep both.
   //
   // Detection is the slot itself, as everywhere else here: a host that does
   // not declare it never runs this, and the older line keeps its card through
