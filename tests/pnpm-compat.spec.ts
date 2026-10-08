@@ -477,6 +477,81 @@ The lockfile contains entries that the active policies reject.`)
     const ndjson = String.raw`{"name":"pnpm","level":"error","err":{"code":"ERR_PNPM_TARBALL_URL_MISMATCH","message":"1 lockfile entries failed verification:\n  dsh-music-huazai@0.1.0 has a tarball URL (https://registry.npmjs.org/x.tgz) that does not match the registry's published metadata (https://registry.npmmirror.com/x.tgz)"}}`
     expect(classifyPnpmFailure(ndjson)?.pkg).toBe('dsh-music-huazai')
   })
+
+  // #808 by @Tofu707: the profile's own lockfile, in the two shapes pnpm
+  // reports with two codes. Both fixtures below are real captures from
+  // 2026-10-08 against a throwaway copy of a profile lockfile — one importer
+  // aligned and its `packages:` entry removed, and one whose recorded
+  // specifier no longer matches package.json.
+  it('classifies a lockfile contradicting itself, and names the entry that is missing (#808)', () => {
+    // pnpm 12.8.1 with `--reporter=ndjson`, which is what market commands use.
+    // On this major stdout is EMPTY (0 bytes) and the whole error block arrives
+    // on stderr as plain text, so this is also the production form. Note the
+    // `help:` line: 12.8.1 offers `--fix-lockfile` here, while 11.24.0 offers
+    // `--no-frozen-lockfile` for the same failure — which is why no rule may
+    // key on that line, only on the code and on pnpm's own phrase.
+    const failed = classifyPnpmFailure([
+      'Error: ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY',
+      '  × installing dependencies',
+      "  ╰─▶ Broken lockfile: no entry for 'dshmarket@1.47.0' in pnpm-lock.yaml",
+      '  help: This issue is probably caused by a badly resolved merge conflict.',
+      "        To fix the lockfile, run 'pnpm install --fix-lockfile'.",
+    ].join('\n'))
+    expect(failed?.code).toBe('lockfile-broken')
+    expect(failed?.recoverable).toBe(false)
+    // The entry is named, but not as `pkg`: the repair is in the lockfile, and
+    // callers act on `pkg` (the #289 peer retry, the #65 ghost-entry advice).
+    expect(failed?.pkg).toBeUndefined()
+    expect(failed?.message).toContain('dshmarket@1.47.0')
+    expect(failed?.message).toContain('不要删掉整个 pnpm-lock.yaml')
+  })
+
+  it('reads the same failure out of pnpm 11\u2019s ndjson record, which arrives on stdout (#808)', () => {
+    // 11.24.0 inverts the streams: stdout carries the record as one JSON line
+    // (stderr is 0 bytes). The decoder lifts err.message out of it, so the
+    // human sentence matches even though the raw stream holds it escaped.
+    // Fields that are machine-specific (time/hostname/pid/stack) are trimmed;
+    // everything the classifier reads is verbatim.
+    const record = String.raw`{"level":"error","name":"pnpm","code":"ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY","hint":"This issue is probably caused by a badly resolved merge conflict.\nTo fix the lockfile, run 'pnpm install --no-frozen-lockfile'.","err":{"name":"pnpm","message":"Broken lockfile: no entry for 'dshmarket@1.47.0' in pnpm-lock.yaml","code":"ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY"}}`
+    const failed = classifyPnpmFailure(record)
+    expect(failed?.code).toBe('lockfile-broken')
+    expect(failed?.message).toContain('dshmarket@1.47.0')
+    // pnpm's phrase alone is enough: a record whose message survives but whose
+    // `code` field is absent still classifies (the anchor is not one string).
+    const phraseOnly = String.raw`{"level":"error","name":"pnpm","err":{"message":"Broken lockfile: no entry for 'dsh-plugin-x@0.4.1' in pnpm-lock.yaml"}}`
+    expect(classifyPnpmFailure(phraseOnly)?.code).toBe('lockfile-broken')
+    expect(classifyPnpmFailure(phraseOnly)?.message).toContain('dsh-plugin-x@0.4.1')
+  })
+
+  it('keeps a lockfile that is merely behind the manifest separate from a broken one (#808)', () => {
+    // pnpm 12.8.1, plain text on stderr. The sentence pnpm uses here wraps
+    // across two lines ("… is not up" / "to date with package.json."), so the
+    // rule anchors on the code — a sentence-anchored rule would miss exactly
+    // the form the user is looking at.
+    const failed = classifyPnpmFailure([
+      'Error: ERR_PNPM_OUTDATED_LOCKFILE',
+      '  × installing dependencies',
+      '  ╰─▶ Cannot install with "frozen-lockfile" because pnpm-lock.yaml is not up',
+      '      to date with package.json.',
+      '        Failure reason:',
+      "        specifiers in the lockfile don't match specifiers in package.json:",
+      '      * in importers["."]:',
+      '      * 1 dependency is mismatched:',
+      '        - dshmarket (lockfile: ^1.46.0, manifest: ^1.47.0)',
+      '  help: Regenerate the lockfile with `pnpm install --lockfile-only` so that',
+      '        pnpm-lock.yaml reflects the current package.json, then re-run `pnpm',
+      '        install --frozen-lockfile`.',
+    ].join('\n'))
+    expect(failed?.code).toBe('lockfile-outdated')
+    expect(failed?.recoverable).toBe(false)
+    expect(failed?.message).toContain('package.json')
+    // Its own repair, not the other one's: the two codes exist because the two
+    // repairs differ, and neither message may borrow the other's command.
+    expect(failed?.message).toContain('不要互相套用')
+    // The ndjson form used in production says the same thing on one line.
+    const ndjson = String.raw`{"level":"error","name":"pnpm","code":"ERR_PNPM_OUTDATED_LOCKFILE","hint":"Note that in CI environments this setting is true by default. If you still need to run install in such cases, use \"pnpm install --no-frozen-lockfile\"","err":{"name":"pnpm","message":"Cannot install with \"frozen-lockfile\" because pnpm-lock.yaml is not up to date with <ROOT>/package.json","code":"ERR_PNPM_OUTDATED_LOCKFILE"}}`
+    expect(classifyPnpmFailure(ndjson)?.code).toBe('lockfile-outdated')
+  })
 })
 
 describe('ERR_PNPM_NO_MATCHING_VERSION — host peer with only pre-releases (#569)', () => {

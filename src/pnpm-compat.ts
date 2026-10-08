@@ -50,6 +50,7 @@ export interface PnpmFailure {
     | 'unexpected-store' | 'patch-failed' | 'unused-patch' | 'missing-tarball-integrity' | 'windows-file-locked'
     | 'profile-file-locked'
     | 'pnpm-unusable' | 'missing-local-dependency' | 'unparseable-build-key' | 'native-oom' | 'ssh-auth-failed'
+    | 'lockfile-broken' | 'lockfile-outdated'
   /** Bilingual, actionable message shown to the user instead of the raw wall of text. */
   message: string
   /** True when re-running `pnpm install` in the profile is the documented recovery. */
@@ -492,6 +493,59 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
       message: hostPeer
         ? `插件声明依赖的宿主包${zh}在 registry 上没有满足其版本范围的发布版（宿主运行时会自带它，npm 上不会出现这个版本）。市场会自动重试一次，放行这条 peer 依赖 / a plugin's declared host peer${en} has no published version satisfying its range — the runtime provides it, so npm carries no such version. The market retries once with that peer exempted from auto-install`
         : `插件声明的一个依赖版本范围在 registry 上没有可满足的版本${zh}，通常是该版本被弃用或从未发布 / a dependency of this plugin declared a version range with no matching release on the registry${en} — the range resolves to nothing (withdrawn or never published)`,
+    }
+  }
+  // #808 by @Tofu707: the profile's own pnpm-lock.yaml is what is wrong, in
+  // two shapes that pnpm reports with two codes and two different repairs, so
+  // they are classified apart rather than merged into one answer.
+  //
+  // `lockfile-outdated` is tested first, because its anchor is a code and
+  // nothing else. The sentence pnpm prints here also arrives WRAPPED across
+  // lines in the human reporter ("… is not up" / "to date with
+  // package.json."), so keying on that sentence instead of the code would miss
+  // the form users actually see.
+  //
+  // The two failures do not happen in a fixed order, so nothing here — and
+  // nothing in either message — claims which one a user meets first.
+  //
+  // `recoverable: false` on both: repeating the same command cannot help, the
+  // lockfile has to change first.
+  if (output.includes('ERR_PNPM_OUTDATED_LOCKFILE')) {
+    return {
+      code: 'lockfile-outdated',
+      recoverable: false,
+      message: 'profile 的 pnpm-lock.yaml 与 package.json 对不上：锁文件里记的 specifier 和 manifest 里声明的不是同一个，pnpm 因此在 frozen-lockfile 这一步直接拒绝，什么都没装。先备份一份 pnpm-lock.yaml，再在 profile 目录里重新生成锁文件（pnpm 最后一行会给出它自己那一版的命令；pnpm install --lockfile-only 也让锁文件与 package.json 对齐）后重试。这与「锁文件里缺条目」是两个不同的报错、对应两种不同的修法，两条命令不要互相套用（#808） / this profile\'s pnpm-lock.yaml does not match package.json: the specifier recorded in the lockfile is not the one the manifest declares, so pnpm refuses at the frozen-lockfile check and installs nothing. Back up pnpm-lock.yaml first, then regenerate the lockfile in the profile directory (pnpm\'s last line names the command for its own version; pnpm install --lockfile-only also realigns the lockfile with package.json) and retry. This is a different error with a different repair from a lockfile that is missing an entry — do not apply one repair to the other',
+    }
+  }
+  // `lockfile-broken` is the lockfile contradicting ITSELF: an importer names
+  // a dependency that has no entry under `packages:`. pnpm 11 and 12 word it
+  // identically and both carry the code, so the rule keys on the code and on
+  // pnpm's own phrase — and deliberately NOT on pnpm's closing `help:` line,
+  // which drifts: 11.24.0 offers `pnpm install --no-frozen-lockfile` for this
+  // failure while 12.8.1 offers `pnpm install --fix-lockfile` (and for the
+  // outdated failure above it offers a third command again, `--lockfile-only`).
+  // Measured 2026-10-08 against 11.24.0 and 12.8.1.
+  //
+  // Both shapes reach here whichever stream pnpm used. Market commands run with
+  // `--reporter=ndjson`, and in that same measurement 11.24.0 wrote the error
+  // record to stdout as one JSON line while 12.8.1 wrote nothing to stdout at
+  // all (0 bytes) and put the error block on stderr as plain text.
+  // withDecodedPnpmDiagnostics lifts the message out of the first form, and
+  // both forms then carry these two strings verbatim.
+  //
+  // The missing entry is named in the message but deliberately NOT put in
+  // `pkg`: callers read `pkg` as "the package this failure is about" and act on
+  // it (the #289 peer retry, the #65 ghost-entry advice), and neither applies —
+  // the repair is in the lockfile, not in the manifest entry.
+  if (output.includes('ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY') || /Broken lockfile/.test(output)) {
+    const broken = /no entry for '?([^'\s]+@[^'\s]+)'? in pnpm-lock\.yaml/i
+      .exec(withDecodedPnpmDiagnostics(output))?.[1]
+    const zh = broken === undefined ? '' : `（${broken}）`
+    const en = broken === undefined ? '' : ` (${broken})`
+    return {
+      code: 'lockfile-broken',
+      recoverable: false,
+      message: `profile 的 pnpm-lock.yaml 自相矛盾：有个依赖在 importers 里记着，packages 里却没有它的条目${zh}，pnpm 因此在真正写 node_modules 的那一步拒绝整个命令。先备份一份 pnpm-lock.yaml，再照 pnpm 自己最后一行提示执行一次——那条提示随它的版本而变（实测 11.24.0 给 pnpm install --no-frozen-lockfile，12.8.1 给 pnpm install --fix-lockfile），让它把缺的条目补回来后重试。不要删掉整个 pnpm-lock.yaml，那会把其余插件的版本一起重新解析（#808） / this profile\'s pnpm-lock.yaml contradicts itself: a dependency is recorded in importers but has no entry under packages${en}, so pnpm refuses the whole command at the step that actually writes node_modules. Back up pnpm-lock.yaml first, then run the command pnpm\'s own last line names — that line changes with its version (measured: 11.24.0 says pnpm install --no-frozen-lockfile, 12.8.1 says pnpm install --fix-lockfile) — and retry once the missing entry is back. Do not delete the whole pnpm-lock.yaml: that re-resolves every other plugin\'s version too`,
     }
   }
   // #786 follow-up: pnpm could not replace one of the profile's own files —
